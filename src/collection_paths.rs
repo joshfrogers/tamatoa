@@ -1,4 +1,4 @@
-use crate::arguments::CLIArguments;
+use crate::cli::Args;
 use crate::platform;
 use envmnt::{ExpandOptions, ExpansionType};
 use glob::MatchOptions;
@@ -33,8 +33,8 @@ impl UserProfile {
 }
 
 pub fn get_paths(
-    cli_args: &CLIArguments,
-    additional_paths: &Vec<String>,
+    cli_args: &Args,
+    additional_paths: &Vec<PathBuf>,
     usnjrnl: &bool,
 ) -> Result<Vec<PathBuf>, glob::PatternError> {
     let mut static_paths: Vec<PathBuf> = additional_paths
@@ -71,7 +71,7 @@ pub fn get_paths(
         info!("Found the following drives {:?}", &base_paths)
     }
 
-    if !&cli_args.collection_file_path.is_empty() {
+    if !&cli_args.collection_file_path.exists() {
         //     IT'S TIME TO GET FUNKY!
         //     Lets try to load a file, and we'll save the patterns from the file if it exists (and has valid patterns)
         error!("Josh hasn't implemented custom file handling yet. go prod him.");
@@ -95,7 +95,7 @@ pub fn get_paths(
         && Path::new("/Applications").exists()
         && Path::new("/Users").exists();
 
-    if &cli_args.collection_file_path == "" || *&cli_args.collect_defaults {
+    if cli_args.collection_file_path.as_os_str().is_empty() || cli_args.collect_defaults {
         info!("Enumerating paths for default artifact collection");
 
         if !platform::is_unix_like() {
