@@ -4,6 +4,7 @@ use std::process::exit;
 #[derive(Debug)]
 pub enum ErrCode {
     ArgumentInvalid(&'static str),
+    ZipError(u8)
 }
 
 #[allow(unreachable_patterns)]

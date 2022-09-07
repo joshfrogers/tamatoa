@@ -1,9 +1,9 @@
-use std::borrow::Borrow;
 use crate::collection_paths::get_paths;
 use anyhow::{anyhow, Context as anyhow_context};
 use env_logger::Env;
 use log::{debug, error, info, trace, warn};
 use ring::digest::{Context, Digest, SHA256};
+use std::borrow::Borrow;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, ErrorKind, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -21,6 +21,8 @@ extern crate glob;
 #[cfg(target_os = "windows")]
 extern crate winreg;
 
+use crate::cli::Args;
+use crate::errors::ErrCode;
 #[cfg(target_os = "windows")]
 use ntfs::indexes::NtfsFileNameIndex;
 #[cfg(target_os = "windows")]
@@ -30,8 +32,6 @@ use ntfs::structured_values::{
 #[cfg(target_os = "windows")]
 use ntfs::{Ntfs, NtfsAttribute, NtfsAttributeType, NtfsFile, NtfsReadSeek};
 use zip::result::ZipResult;
-use crate::errors::ErrCode;
-use crate::cli::Args;
 
 #[cfg(target_os = "windows")]
 mod ntfs_driver;
@@ -44,16 +44,19 @@ use crate::sector_reader::SectorReader;
 
 fn main() {
     match cli::parse_args() {
-        Ok(args) => {    debug!("{:?}", args);
-            exit_with_retcode(start(args));},
+        Ok(args) => {
+            debug!("{:?}", args);
+            exit_with_retcode(start(args));
+        }
         Err(e) => {
             log::error!("Error while parsing arguments:\n\t{}", e);
             exit(e.get_retcode());
         }
     };
-
 }
 fn start(cli_args: Args) -> Result<(), ErrCode> {
+    info!("tamatoa");
+    info!("beginning collection...");
     let mut collection_paths: Vec<PathBuf> = vec![];
     match get_paths(&cli_args, &cli_args.collection_files, &cli_args.usnjrnl) {
         Ok(path_vector) => collection_paths = path_vector,
@@ -66,7 +69,7 @@ fn start(cli_args: Args) -> Result<(), ErrCode> {
     );
 
     let zip_filename = cli_args.output_filename.to_string_lossy().into_owned();
-    let zip_path: String =  cli_args.output_path.to_string_lossy().into_owned() + &zip_filename;
+    let zip_path: String = cli_args.output_path.to_string_lossy().into_owned() + &zip_filename;
 
     match create_archive(
         zip_path.as_str(),

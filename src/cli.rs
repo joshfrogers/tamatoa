@@ -147,6 +147,10 @@ pub fn parse_args() -> Result<Args, ErrCode> {
         );
     }
 
+    if args.zip_level < 1 || args.zip_level > 9 {
+        return Err(ErrCode::ZipError(1))
+    }
+
     Ok(args)
 }
 

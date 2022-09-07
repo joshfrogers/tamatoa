@@ -71,7 +71,7 @@ pub fn get_paths(
         info!("Found the following drives {:?}", &base_paths)
     }
 
-    if !&cli_args.collection_file_path.exists() {
+    if !cli_args.collection_file_path.as_os_str().is_empty() {
         //     IT'S TIME TO GET FUNKY!
         //     Lets try to load a file, and we'll save the patterns from the file if it exists (and has valid patterns)
         error!("Josh hasn't implemented custom file handling yet. go prod him.");
