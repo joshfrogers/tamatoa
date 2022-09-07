@@ -156,21 +156,3 @@ pub fn setup_log(level: log::LevelFilter) {
         .filter(None, level)
         .init();
 }
-
-//        (
-//        //      "-u",
-//        //      "SFTP username"
-//        //  ),
-//        //  (
-//        //      "-p",
-//        //      "SFTP password"
-//        //  ),
-//        //  (
-//        //      "-s",
-//        //      "SFTP Server resolvable hostname or IP address and port. If no port is given then 22 is used by default.  Format is <server name>:<port>\n\t Usage: -s <ip>:<port>"
-//        //  ),
-//        //  (
-//        //      "-os",
-//        //      "Defines the output directory on the SFTP server, as it may be a different location than the ZIP generate on disk. Can be full or relative path.\n\t Usage: -os <directory path>"
-//        //  ),
-//        //
