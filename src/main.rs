@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use crate::collection_paths::get_paths;
 use anyhow::{anyhow, Context as anyhow_context};
 use env_logger::Env;
@@ -8,15 +9,18 @@ use std::io::{BufReader, ErrorKind, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 use zip::CompressionMethod;
-mod arguments;
+mod cli;
 mod collection_paths;
+mod errors;
 mod platform;
 mod version;
+use errors::exit_with_retcode;
+use std::process::exit;
 extern crate core;
 extern crate glob;
-extern crate log;
 #[cfg(target_os = "windows")]
 extern crate winreg;
+
 #[cfg(target_os = "windows")]
 use ntfs::indexes::NtfsFileNameIndex;
 #[cfg(target_os = "windows")]
@@ -26,6 +30,8 @@ use ntfs::structured_values::{
 #[cfg(target_os = "windows")]
 use ntfs::{Ntfs, NtfsAttribute, NtfsAttributeType, NtfsFile, NtfsReadSeek};
 use zip::result::ZipResult;
+use crate::errors::ErrCode;
+use crate::cli::Args;
 
 #[cfg(target_os = "windows")]
 mod ntfs_driver;
@@ -37,24 +43,17 @@ use crate::ntfs_driver::{cd, get};
 use crate::sector_reader::SectorReader;
 
 fn main() {
-    let cli_args: arguments::CLIArguments = arguments::CLIArguments::new();
+    match cli::parse_args() {
+        Ok(args) => {    debug!("{:?}", args);
+            exit_with_retcode(start(args));},
+        Err(e) => {
+            log::error!("Error while parsing arguments:\n\t{}", e);
+            exit(e.get_retcode());
+        }
+    };
 
-    let mut log_level: String;
-    if cli_args.disable_logging {
-        log_level = "none".to_string();
-    } else if !cli_args.log_verbosity.is_empty() {
-        println!("Running with log verbosity: {}", &cli_args.log_verbosity);
-        log_level = cli_args.log_verbosity.clone();
-    } else {
-        log_level = "warn".to_string();
-    }
-
-    let env = Env::default()
-        .filter_or("LRLOGLEVEL", log_level)
-        .write_style_or("LRLOGSTYLE", "always");
-
-    env_logger::init_from_env(env);
-
+}
+fn start(cli_args: Args) -> Result<(), ErrCode> {
     let mut collection_paths: Vec<PathBuf> = vec![];
     match get_paths(&cli_args, &cli_args.collection_files, &cli_args.usnjrnl) {
         Ok(path_vector) => collection_paths = path_vector,
@@ -66,8 +65,8 @@ fn main() {
         &collection_paths.len()
     );
 
-    let zip_filename: &str = &cli_args.output_filename;
-    let zip_path: String = cli_args.output_path + zip_filename;
+    let zip_filename = cli_args.output_filename.to_string_lossy().into_owned();
+    let zip_path: String =  cli_args.output_path.to_string_lossy().into_owned() + &zip_filename;
 
     match create_archive(
         zip_path.as_str(),
@@ -95,14 +94,15 @@ fn main() {
             info!("Following is mocked connection:");
             info!(
                 "Connecting to server: {}, using credentials {}:{}",
-                cli_args.sftp_server, cli_args.user_name, cli_args.user_password
+                cli_args.sftp_server, cli_args.sftp_username, cli_args.sftp_password
             );
             info!(
-                "SFTP settings - outputpath: {}, cleanup: {}, dry_run: {}",
+                "SFTP settings - outputpath: {:?}, cleanup: {}, dry_run: {}",
                 cli_args.sftp_output_path, cli_args.sftp_cleanup, cli_args.dry_run
             );
         }
     }
+    Ok(())
 }
 
 fn create_archive(
@@ -245,7 +245,7 @@ fn sha256_digest<R: Read>(mut reader: R) -> Result<Digest, ErrorKind> {
 fn ll_disk_access(path: &PathBuf) -> anyhow::Result<File> {
     //     this function is meant to replace the one below on unix like systems.
     //     Realistically, we want to emulate it properly, but as it is root access *should* provide the access we need.
-    //  TODO: Implement somethign similar for low leevel access on mac/linux/other supported os
+    // TODO: Implement somethign similar for low level access on mac/linux/other supported os
     match File::open(path) {
         Ok(file) => Ok(file),
         Err(e) => {
@@ -320,7 +320,10 @@ fn ll_disk_access(path: &PathBuf) -> anyhow::Result<File> {
     match get(file_name, &mut info) {
         Ok(_) => match File::open(file_name) {
             Ok(file) => return Ok(file),
-            Err(e) => {error!("Unable to copy file {}, reason: {}", &file_name, e); Err(anyhow!(e))},
+            Err(e) => {
+                error!("Unable to copy file {}, reason: {}", &file_name, e);
+                Err(anyhow!(e))
+            }
         },
         Err(err) => return Err(err),
     }

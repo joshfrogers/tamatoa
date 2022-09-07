@@ -2,6 +2,8 @@
 name = "tamatoa"
 version = "0.3.0"
 edition = "2021"
+authors = ["Josh Buck-Rogers"]
+description = "The tamatoa tool collects forensic artifacts from hosts quickly and securely, minimizing impact to the host."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,6 +14,7 @@ opt-level = 0
 opt-level = 3
 
 [dependencies]
+structopt = "0.3.23"
 log = "0.4.0"
 env_logger = "0.8.4"
 glob = "0.3.0"
