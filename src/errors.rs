@@ -1,9 +1,14 @@
+use std::error::Error;
 use std::fmt;
 use std::process::exit;
+use glob::PatternError;
 
 #[derive(Debug)]
 pub enum ErrCode {
     ArgumentInvalid(&'static str),
+    UnsupportedPlatform(&'static str),
+    PatternError(&'static str),
+    IOError,
     ZipError(u8)
 }
 
@@ -13,7 +18,25 @@ impl fmt::Display for ErrCode {
         match &self {
             ErrCode::ArgumentInvalid(element) => write!(f, "ArgumentInvalid: {}", element),
             _ => write!(f, "{:?}", self),
+            ErrCode::UnsupportedPlatform(element) => write!(f, "Unsupported Platform: {}", element),
+            _ => write!(f, "{:?}", self),
+            ErrCode::PatternError(element) => write!(f, "Pattern Error: {}", element),
+            _ => write!(f, "{:?}", self),
+            ErrCode::ZipError(element) => write!(f, "Zip Errror: {}", element),
+            _ => write!(f, "{:?}", self),
         }
+    }
+}
+
+impl From<PatternError> for ErrCode {
+    fn from(err: PatternError) -> ErrCode {
+        ErrCode::PatternError(err.msg)
+    }
+}
+
+impl From<std::io::Error> for ErrCode {
+    fn from(err: std::io::Error) -> ErrCode {
+        ErrCode::IOError
     }
 }
 

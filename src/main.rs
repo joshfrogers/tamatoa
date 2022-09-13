@@ -14,6 +14,7 @@ mod collection_paths;
 mod errors;
 mod platform;
 mod version;
+mod users;
 use errors::exit_with_retcode;
 use std::process::exit;
 extern crate core;
@@ -63,23 +64,25 @@ fn start(cli_args: Args) -> Result<(), ErrCode> {
         Err(e) => error!("Error in collecting paths: {}", e),
     }
 
-    info!(
-        "Collecting and writing {} files to zip",
-        &collection_paths.len()
-    );
+    // info!(
+    //     "Collecting and writing {} files to zip",
+    //     &collection_paths.len()
+    // );
+    //
+    // let zip_filename = cli_args.output_filename.to_string_lossy().into_owned();
+    // let zip_path: String = cli_args.output_path.to_string_lossy().into_owned() + &zip_filename;
+    //
+    // match create_archive(
+    //     zip_path.as_str(),
+    //     collection_paths,
+    //     &cli_args.hash_files,
+    //     &cli_args.zip_level,
+    // ) {
+    //     Ok(_) => trace!("Archive successfully created."),
+    //     Err(_) => error!("Archive creation error!"),
+    // }
 
-    let zip_filename = cli_args.output_filename.to_string_lossy().into_owned();
-    let zip_path: String = cli_args.output_path.to_string_lossy().into_owned() + &zip_filename;
 
-    match create_archive(
-        zip_path.as_str(),
-        collection_paths,
-        &cli_args.hash_files,
-        &cli_args.zip_level,
-    ) {
-        Ok(_) => trace!("Archive successfully created."),
-        Err(_) => error!("Archive creation error!"),
-    }
     // the above method doesn't always let us copy data that is is use (or may be locked to admin perms)
     // methods we could look into:
     //  - NTFS crate
@@ -92,19 +95,19 @@ fn start(cli_args: Args) -> Result<(), ErrCode> {
     //     set up the connection to the sftp server, if arguments provided imply we're setting one up.
     //     connect to the SFTP server
     //     Create the file stream
-    if false {
-        if cli_args.use_sftp {
-            info!("Following is mocked connection:");
-            info!(
-                "Connecting to server: {}, using credentials {}:{}",
-                cli_args.sftp_server, cli_args.sftp_username, cli_args.sftp_password
-            );
-            info!(
-                "SFTP settings - outputpath: {:?}, cleanup: {}, dry_run: {}",
-                cli_args.sftp_output_path, cli_args.sftp_cleanup, cli_args.dry_run
-            );
-        }
-    }
+    // if false {
+    //     if cli_args.use_sftp {
+    //         info!("Following is mocked connection:");
+    //         info!(
+    //             "Connecting to server: {}, using credentials {}:{}",
+    //             cli_args.sftp_server, cli_args.sftp_username, cli_args.sftp_password
+    //         );
+    //         info!(
+    //             "SFTP settings - outputpath: {:?}, cleanup: {}, dry_run: {}",
+    //             cli_args.sftp_output_path, cli_args.sftp_cleanup, cli_args.dry_run
+    //         );
+    //     }
+    // }
     Ok(())
 }
 

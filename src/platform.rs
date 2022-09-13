@@ -31,3 +31,5 @@ pub fn supports_raw_access() -> bool {
 //     //     Unsure how we can check this - returning false for now, will come back an fix it
 //     false
 // }
+
+pub fn get_platform() -> &'static str { env::consts::OS }

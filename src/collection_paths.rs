@@ -1,42 +1,21 @@
 use crate::cli::Args;
+use crate::errors::ErrCode;
 use crate::platform;
+use crate::users::{find_users, UserProfile};
 use envmnt::{ExpandOptions, ExpansionType};
 use glob::MatchOptions;
 use glob::Pattern;
-use log::{error, info, trace, warn};
+use log::{debug, error, info, warn};
 use std::path::{Path, PathBuf};
 use std::{fs, process};
-#[cfg(target_os = "windows")]
-use windows_drives;
-#[cfg(target_os = "windows")]
-use winreg::enums::*;
-#[cfg(target_os = "windows")]
-use winreg::RegKey;
+use std::error;
 
-#[derive(Default, Debug)]
-pub struct UserProfile {
-    user_key: String,
-    path: String,
-    profile_path: String,
-    full_profile: u32,
-}
-
-impl UserProfile {
-    pub fn new() -> UserProfile {
-        UserProfile {
-            user_key: "".to_string(),
-            path: "".to_string(),
-            profile_path: "".to_string(),
-            full_profile: 0,
-        }
-    }
-}
 
 pub fn get_paths(
     cli_args: &Args,
-    additional_paths: &Vec<PathBuf>,
+    additional_paths: &[PathBuf],
     usnjrnl: &bool,
-) -> Result<Vec<PathBuf>, glob::PatternError> {
+) -> Result<Vec<PathBuf>, ErrCode> {
     let mut static_paths: Vec<PathBuf> = additional_paths
         .into_iter()
         .map(|path| PathBuf::from(path))
@@ -212,7 +191,7 @@ pub fn get_paths(
                 )));
             }
 
-            let users: Vec<UserProfile> = find_users();
+            let users: Vec<UserProfile> = find_users()?;
             for user in users {
                 glob_paths.push(Pattern::new(&*format!(
                     "{}\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\**",
@@ -272,6 +251,8 @@ pub fn get_paths(
             }
         } else if platform::is_unix_like() && has_mac_folders {
             info!("macos platform detected");
+            let users: Vec<UserProfile> = find_users()?;
+            debug!("Users found: {:?}", users);
 
             glob_paths.push(Pattern::new(&*format!(
                 "**/Library/*Support/Google/Chrome/Default/*"
@@ -478,43 +459,43 @@ pub fn get_paths(
             glob_paths.push(Pattern::new(&*format!("/etc/default/**"))?);
         } else {
             error!("This is an unsupported platform, go fix this.");
-            return Ok(vec![]);
+            return Err(ErrCode::UnsupportedPlatform(platform::get_platform()));
         }
 
         let mut num_paths: i32 = 0;
         info!("Enumerating file systems and matching patterns");
-        for base_path in base_paths {
-            info!("Enumerating volume: {:?}", &base_path);
-            for entry in walk_tree(base_path) {
-                num_paths += 1;
-                if static_paths.contains(&entry) {
-                    collection_paths.push(entry);
-                    continue;
-                }
-
-                let mut globfound: bool = false;
-                for globpattern in &glob_paths {
-                    let glob_entry = &entry;
-                    let glob_options = MatchOptions {
-                        case_sensitive: false,
-                        require_literal_separator: false,
-                        require_literal_leading_dot: false,
-                    };
-                    globfound = globpattern.matches_path_with(glob_entry, glob_options);
-                    if globfound {
-                        collection_paths.push(glob_entry.to_owned());
-                        break;
-                    }
-                }
-                if globfound {
-                    continue;
-                }
-
-                //     Extend this to regex matching too.
-                //     only used if we have custom code
-            }
-            info!("Scanned {} paths", num_paths);
-        }
+        // for base_path in base_paths {
+        //     info!("Enumerating volume: {:?}", &base_path);
+        //     for entry in walk_tree(base_path) {
+        //         num_paths += 1;
+        //         if static_paths.contains(&entry) {
+        //             collection_paths.push(entry);
+        //             continue;
+        //         }
+        //
+        //         let mut globfound: bool = false;
+        //         for globpattern in &glob_paths {
+        //             let glob_entry = &entry;
+        //             let glob_options = MatchOptions {
+        //                 case_sensitive: false,
+        //                 require_literal_separator: false,
+        //                 require_literal_leading_dot: false,
+        //             };
+        //             globfound = globpattern.matches_path_with(glob_entry, glob_options);
+        //             if globfound {
+        //                 collection_paths.push(glob_entry.to_owned());
+        //                 break;
+        //             }
+        //         }
+        //         if globfound {
+        //             continue;
+        //         }
+        //
+        //         //     Extend this to regex matching too.
+        //         //     only used if we have custom code
+        //     }
+        //     info!("Scanned {} paths", num_paths);
+        // }
     }
     info!("Found {} paths to collect", collection_paths.len());
     Ok(collection_paths)
@@ -548,56 +529,4 @@ pub fn walk_tree(base_path: PathBuf) -> Vec<PathBuf> {
         }
     }
     file_listing
-}
-
-#[cfg(unix)]
-pub fn find_users() -> Vec<UserProfile> {
-    vec![]
-}
-
-#[cfg(target_os = "windows")]
-pub fn find_users() -> Vec<UserProfile> {
-    let hklm: RegKey = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let key = hklm.open_subkey("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList");
-
-    let mut user_vec: Vec<UserProfile> = vec![];
-
-    return if let Ok(registry_key) = key {
-        let profile_names = registry_key.enum_keys();
-
-        for user in profile_names {
-            if let Ok(true_user) = user {
-                let path = format!(
-                    "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList\\{}",
-                    &true_user
-                );
-                let profile = hklm.open_subkey(&path);
-                if let Ok(working_profile) = profile {
-                    let mut profile_path: String = String::from("");
-                    if let Ok(ppath) = working_profile.get_value("ProfileImagePath") {
-                        profile_path = ppath;
-                    }
-                    let mut full_profile: u32 = 0;
-                    if let Ok(fprofile) = working_profile.get_value("FullProfile") {
-                        full_profile = fprofile;
-                        let result = UserProfile {
-                            user_key: true_user,
-                            path: format!("HKEY_LOCAL_MACHINE\\{}\\ProfileImagePath", &path),
-                            profile_path,
-                            full_profile,
-                        };
-
-                        user_vec.push(result);
-                    }
-                }
-            }
-        }
-        user_vec
-    } else {
-        error!(
-            "{}",
-            String::from("Unable to access profile list registry key.")
-        );
-        user_vec
-    };
 }

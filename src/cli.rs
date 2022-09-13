@@ -3,7 +3,7 @@ use crate::platform;
 use std::path::PathBuf;
 use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Default, StructOpt)]
 #[structopt(name = "tamatoa", about, author)]
 pub struct Args {
     #[structopt(
