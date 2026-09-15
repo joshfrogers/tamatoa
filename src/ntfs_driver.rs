@@ -149,7 +149,7 @@ where
         }
     };
     let data_item = data_item?;
-    let data_attribute = data_item.to_attribute();
+    let data_attribute = data_item.to_attribute()?;
     let mut data_value = data_attribute.value(&mut info.fs)?;
 
     debug!(
