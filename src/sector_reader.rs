@@ -134,8 +134,7 @@ where
                 // This is unsupported, because it's not safely possible under Windows.
                 // We cannot seek to the end to determine the raw partition size.
                 // Which makes it impossible to set `self.stream_position`.
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     "SeekFrom::End is unsupported for SectorReader",
                 ));
             }

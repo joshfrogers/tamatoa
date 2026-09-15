@@ -448,7 +448,7 @@ pub fn collect(
             // If the panic happened after start_file, drop the partial entry
             // (an error here just means no entry was open: safe to ignore).
             if zip.abort_file().is_ok() {
-                if let Some(name) = entry_name(&cfg.host, path).ok() {
+                if let Ok(name) = entry_name(&cfg.host, path) {
                     entry_names.remove(&name);
                 }
             }
@@ -687,11 +687,10 @@ mod tests {
         h.update(b"alpha\n");
         let want = to_hex(h.finalize());
         let man: serde_json::Value = {
-            let raw: Vec<u8> = z
-                .by_name("tamatoa_manifest.json")
+            let mut raw: Vec<u8> = Vec::new();
+            z.by_name("tamatoa_manifest.json")
                 .unwrap()
-                .bytes()
-                .collect::<std::io::Result<Vec<_>>>()
+                .read_to_end(&mut raw)
                 .unwrap();
             serde_json::from_slice(&raw).unwrap()
         };

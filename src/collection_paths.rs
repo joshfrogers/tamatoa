@@ -612,11 +612,9 @@ pub fn find_users() -> Vec<UserProfile> {
         warn!("cannot read /etc/passwd; user-scoped artifacts will use /home/* only");
         users.push(UserProfile {
             profile_path: "/home/*".to_string(),
-            ..Default::default()
         });
         users.push(UserProfile {
             profile_path: "/root".to_string(),
-            ..Default::default()
         });
         return users;
     };

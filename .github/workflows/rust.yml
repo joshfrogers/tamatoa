@@ -1,47 +1,52 @@
-name: Rust
+name: Rust CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  build-linux:
+  fmt:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v3
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
-  
-  # build-windows:
-  #   runs-on: windows-latest
+      # Actions are pinned to commit SHAs, not mutable tags (supply-chain).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: cargo fmt --all -- --check
 
-  #   steps:
-  #   - uses: actions/checkout@v3
-  #   - name: Build
-  #     run: cargo build --verbose
-  #   - name: Run tests
-  #     run: cargo test --verbose
-  #  - name: Release
-  #    uses: softprops/action-gh-release@v1
-  #    if: startsWith(github.ref, 'refs/tags/')
-  
-  # build-mac-x86:
-  #   runs-on: macos-latest
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: cargo clippy --all-targets --locked -- -D warnings
 
-  #   steps:
-  #   - uses: actions/checkout@v3
-  #   - name: Build
-  #     run: cargo build --verbose
-  #   - name: Run tests
-  #     run: cargo test --verbose
-  #  - name: Release
-  #    uses: softprops/action-gh-release@v1
-  #    if: startsWith(github.ref, 'refs/tags/')
+  # Native runners on all three platforms: this repo's Windows/macOS code
+  # (raw NTFS access, registry profile lookup) was never compiled by CI
+  # before - regressions there were invisible.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: cargo test --locked --verbose
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

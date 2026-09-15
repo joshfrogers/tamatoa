@@ -116,7 +116,7 @@ fn resolve_output_path(cli: &arguments::Cli) -> anyhow::Result<PathBuf> {
     };
     if Path::new(&name)
         .parent()
-        .map_or(false, |p| !p.as_os_str().is_empty())
+        .is_some_and(|p| !p.as_os_str().is_empty())
     {
         return Err(anyhow!(
             "--output-file must be a bare file name, got {name}"
