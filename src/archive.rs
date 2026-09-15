@@ -100,6 +100,47 @@ impl CollectionStats {
     }
 }
 
+/// Quote and control-escape an OS-controlled string for log output.
+///
+/// A compromised endpoint chooses its own file names; a raw `display()` into
+/// an operator's terminal would let ANSI sequences (red text, cleared
+/// screens, hyperlinks) spoof tamatoa's own messages. The manifest JSON
+/// escapes these values already; this covers the log side.
+pub fn esc(s: &std::ffi::OsStr) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.to_string_lossy().chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\x1b' => out.push_str("\\e"),
+            c if c.is_control() => out.push_str(&c.escape_debug().to_string()),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(test)]
+mod esc_tests {
+    use super::esc;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn control_and_escape_chars_never_reach_output_raw() {
+        let hostile = OsStr::new("evil\u{1b}[31mRED\u{1b}[0m \"quoted\" \u{7}\n.txt");
+        let out = esc(hostile);
+        assert!(
+            !out.chars().any(|c| c.is_control()),
+            "raw control char: {out:?}"
+        );
+        assert!(!out.contains("\u{1b}"));
+        assert!(out.starts_with('"') && out.ends_with('"'));
+        // Ordinary names pass through with only the quotes added.
+        assert_eq!(esc(OsStr::new("/etc/passwd")), "\"/etc/passwd\"");
+    }
+}
+
 /// Convert a collected filesystem path into a safe, host-qualified relative
 /// zip entry name. Returns Err for paths containing parent-directory components
 /// (which a hostile volume could otherwise use for traversal on extraction).
@@ -137,14 +178,14 @@ pub fn entry_name(host: &str, path: &Path) -> Result<String> {
             }
             Component::RootDir | Component::CurDir => {}
             Component::ParentDir => {
-                return Err(anyhow!("path contains '..': {}", path.display()));
+                return Err(anyhow!("path contains '..': {}", esc(path.as_os_str())));
             }
         }
     }
     if parts.len() < 2 {
         return Err(anyhow!(
             "path has no collectable components: {}",
-            path.display()
+            esc(path.as_os_str())
         ));
     }
     Ok(parts.join("/"))
@@ -194,7 +235,7 @@ fn open_artifact(path: &Path) -> Result<File> {
         Err(e) => crate::rawaccess::ll_disk_access(path)
             .with_context(|| format!("open failed ({e}), raw volume fallback also failed")),
         #[cfg(not(windows))]
-        Err(e) => Err(e).with_context(|| format!("opening {}", path.display())),
+        Err(e) => Err(e).with_context(|| format!("opening {}", esc(path.as_os_str()))),
     }
 }
 
@@ -256,10 +297,10 @@ fn collect_one(
     if let Some(outcome) = classify(path) {
         let missing = matches!(outcome, Outcome::NotFound(_));
         if missing {
-            debug!("artifact absent {}: {outcome:?}", path.display());
+            debug!("artifact absent {}: {outcome:?}", esc(path.as_os_str()));
             stats.missing += 1;
         } else {
-            warn!("{}: skipped: {outcome:?}", path.display());
+            warn!("{}: skipped: {outcome:?}", esc(path.as_os_str()));
             stats.failed += 1;
         }
         record(outcome, None, None, 0);
@@ -303,10 +344,10 @@ fn collect_one(
                 Failed(e.to_string())
             };
             if gone {
-                debug!("{} vanished before open", path.display());
+                debug!("{} vanished before open", esc(path.as_os_str()));
                 stats.missing += 1;
             } else {
-                warn!("{}: skipped: {e}", path.display());
+                warn!("{}: skipped: {e}", esc(path.as_os_str()));
                 stats.failed += 1;
             }
             record(outcome, None, None, 0);
@@ -371,7 +412,7 @@ fn collect_one(
             // Drop the incomplete entry entirely: a truncated file that
             // looks complete is worse forensic evidence than none.
             if let Err(e) = zip.abort_file() {
-                warn!("aborting entry {entry}: {e}");
+                warn!("aborting entry {}: {e}", esc(std::ffi::OsStr::new(&entry)));
             }
             entry_names.remove(&entry);
             stats.failed += 1;
@@ -410,7 +451,7 @@ pub fn collect(
             o.mode(0o600);
         }
         o.open(archive_path)
-            .with_context(|| format!("creating archive {}", archive_path.display()))?
+            .with_context(|| format!("creating archive {}", esc(archive_path.as_os_str())))?
     };
 
     // 1 MiB write buffer under the zip writer: the zip encoder emits many
@@ -444,7 +485,7 @@ pub fn collect(
                 .cloned()
                 .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
                 .unwrap_or_else(|| "unknown panic".to_string());
-            error!("panic while collecting {}: {msg}", path.display());
+            error!("panic while collecting {}: {msg}", esc(path.as_os_str()));
             // If the panic happened after start_file, drop the partial entry
             // (an error here just means no entry was open: safe to ignore).
             if zip.abort_file().is_ok() {
@@ -544,8 +585,12 @@ pub fn collect(
             use std::os::unix::fs::OpenOptionsExt;
             o.mode(0o600);
         }
-        o.open(&sidecar_path)
-            .with_context(|| format!("creating sidecar manifest {}", sidecar_path.display()))?
+        o.open(&sidecar_path).with_context(|| {
+            format!(
+                "creating sidecar manifest {}",
+                esc(sidecar_path.as_os_str())
+            )
+        })?
     };
     sidecar.write_all(&serde_json::to_vec_pretty(&sidecar_body)?)?;
     sidecar.flush()?;

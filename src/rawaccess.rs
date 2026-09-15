@@ -113,17 +113,24 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 pub fn ll_disk_access(path: &Path) -> Result<File> {
     // Raw NTFS parsing speaks UTF-8/UTF-16LE; non-Unicode paths are refused
     // rather than lossily converted (lossy = wrong file).
-    let display = path
-        .to_str()
-        .with_context(|| format!("raw access needs UTF-8 paths, got {}", path.display()))?;
+    let display = path.to_str().with_context(|| {
+        format!(
+            "raw access needs UTF-8 paths, got {}",
+            crate::archive::esc(path.as_os_str())
+        )
+    })?;
     let (label, dirs, filename) = split_windows_path(display)?;
 
     let staging = staging_dir(filename);
-    std::fs::create_dir_all(&staging)
-        .with_context(|| format!("creating staging dir {}", staging.display()))?;
+    std::fs::create_dir_all(&staging).with_context(|| {
+        format!(
+            "creating staging dir {}",
+            crate::archive::esc(staging.as_os_str())
+        )
+    })?;
     debug!(
         "raw-access fallback for {} via \\\\.\\{label}:",
-        path.display()
+        crate::archive::esc(path.as_os_str())
     );
 
     let extracted = with_volume(label, |vol| {
@@ -144,15 +151,20 @@ pub fn ll_disk_access(path: &Path) -> Result<File> {
         Ok(p) => p,
         Err(e) => {
             std::fs::remove_dir(&staging).ok();
-            return Err(e).with_context(|| format!("raw access for {}", path.display()));
+            return Err(e).with_context(|| {
+                format!("raw access for {}", crate::archive::esc(path.as_os_str()))
+            });
         }
     };
 
-    let file =
-        File::open(&staged).with_context(|| format!("opening staged {}", staged.display()))?;
+    let file = File::open(&staged)
+        .with_context(|| format!("opening staged {}", crate::archive::esc(staged.as_os_str())))?;
     // Pipeline now holds the handle; remove the plaintext copy from disk.
     if let Err(e) = std::fs::remove_file(&staged) {
-        debug!("could not unlink staged file {}: {e}", staged.display());
+        debug!(
+            "could not unlink staged file {}: {e}",
+            crate::archive::esc(staged.as_os_str())
+        );
     }
     std::fs::remove_dir(&staging).ok();
     Ok(file)

@@ -89,7 +89,10 @@ fn push_if_file_or_walk(path: PathBuf, out: &mut Vec<PathBuf>, seen: &mut HashSe
                     out.push(path);
                 }
             } else {
-                debug!("skipping nonexistent entry {}", path.display());
+                debug!(
+                    "skipping nonexistent entry {}",
+                    crate::archive::esc(path.as_os_str())
+                );
             }
             return;
         }
@@ -104,7 +107,7 @@ fn push_if_file_or_walk(path: PathBuf, out: &mut Vec<PathBuf>, seen: &mut HashSe
     } else if seen.insert(path.clone()) {
         out.push(path);
     } else {
-        debug!("deduplicated {}", path.display());
+        debug!("deduplicated {}", crate::archive::esc(path.as_os_str()));
     }
 }
 
@@ -115,11 +118,14 @@ pub fn walk_tree(base_path: PathBuf) -> Vec<PathBuf> {
     let mut file_listing: Vec<PathBuf> = vec![];
     while let Some(dir) = dir_stack.pop() {
         if pruned(&dir) {
-            debug!("pruned {}", dir.display());
+            debug!("pruned {}", crate::archive::esc(dir.as_os_str()));
             continue;
         }
         let Ok(entries) = fs::read_dir(&dir) else {
-            debug!("unreadable directory {}", dir.display());
+            debug!(
+                "unreadable directory {}",
+                crate::archive::esc(dir.as_os_str())
+            );
             continue;
         };
         for entry in entries.flatten() {
