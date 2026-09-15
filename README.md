@@ -52,23 +52,31 @@ Run privileged where you can. Unprivileged runs still work; artifacts
 you cannot read are recorded as failures.
 
 ## What it collects
-
 Windows: `$Recycle.Bin` metadata, Event Logs, Prefetch, SRU, scheduled
-tasks, startup items, Amcache, SetupAPI log, hosts file, user hives
-(NTUSER.DAT / UsrClass.dat + transaction logs; read through raw volume
-access when the OS locks them), Recent/Jump Lists/WebCache, browser
-history, PowerShell console history, `$MFT`/`$LogFile`, and
+tasks, startup items, Amcache, SetupAPI log, hosts file, minidumps,
+NetSetup.LOG, Windows Defender MPLogs, user hives (NTUSER.DAT /
+UsrClass.dat + transaction logs, plus the SAM/SOFTWARE/SYSTEM/DEFAULT/
+SECURITY system hives; locked files are read through raw volume access),
+Recent/Jump Lists/WebCache, Chrome and Edge history, cookies, logins and
+extensions for every browser profile (incl. Local State key material),
+Firefox profiles, PowerShell console history, `$MFT`/`$LogFile`, and
 `$UsnJrnl:$J` with `--usnjrnl`.
 
 Linux: shell histories and dotfiles for every account with a real home
 (from /etc/passwd, not just /home/*), ssh material, cron/at, systemd
-units, init scripts, /var/log recursively, fstab, resolv.conf, apt
-sources and keys, modprobe config, PAM and sshd config, grub and ACPI
-tables.
+units including per-user units and autostart entries, /var/log
+recursively, sudoers and sudoers.d, ld.so.preload/conf.d (rootkit
+check), profile/profile.d, issue/motd/rc.local, fstab, resolv.conf,
+apt/yum sources, cloud-init config and per-instance data (user-data
+often holds injected credentials), dpkg installed-package state,
+PAM and sshd config, grub and ACPI tables.
 
-macOS: preference plists under the standard Library locations, Chrome
-and Firefox data, TCC database, .fseventsd, launch agents/daemons,
-startup items, /var/log and diagnostics, hosts/passwd/group.
+macOS: per-account shell histories and ssh dotfiles, Safari history and
+cookies, Chrome (all profiles) and Firefox data, TCC databases (user
+and system), .fseventsd, unified log plus its uuidtext string store,
+launch agents (system, global, per-user) and daemons, startup items,
+/var/log and diagnostics, hosts/passwd/group, sudoers and sudoers.d,
+master.passwd, pf.conf, ssh config, at jobs.
 
 The manifest records exactly what any given run attempted and what
 happened to each entry.
