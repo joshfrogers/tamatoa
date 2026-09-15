@@ -1,180 +1,124 @@
 # tamatoa
 
 ![Rust CI](https://github.com/joshfrogers/tamatoa/actions/workflows/rust.yml/badge.svg)
-![Release](https://github.com/joshfrogers/tamatoa/actions/workflows/release.yml/badge.svg)
 [![license: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE.md)
 
 <img src="./img/DALL-E-SAC.png" width="100" height="100" align="right" alt="tamatoa crab">
 
-Fast, safe, forensically sound evidence collection for Windows, Linux and macOS —
-built for **incident response** and for **unattended fleet execution**.
+Forensic evidence collector for Windows, Linux and macOS. It gathers a
+standard set of artifacts (plus whatever paths you give it) into one ZIP
+with a SHA-256 manifest. CLI flags are compatible with
+[CyLR](https://github.com/orlikoski/CyLR/), so existing runbooks keep
+working.
 
-Point it at a machine; get one ZIP plus an SHA-256 manifest that attests to every
-byte in it. CyLR-compatible flags, so existing runbooks keep working.
+Built to be run unattended by an agent (Velociraptor, Ansible, Intune,
+psexec, ssh) during an incident.
 
-## Quick start
+## Usage
 
 ```sh
-# collect default artifacts, deterministic name in the current directory
-tamatoa
-
-# unattended (the command a Velociraptor / Ansible / Intune agent runs)
-tamatoa -q --json -od /var/tmp
+tamatoa                        # default artifacts, name = <host>-<UTC ts>.zip
+tamatoa -q --json -od /var/tmp # what an orchestrator would run
 ```
 
-stdout gets exactly one JSON document — exit code tells you the rest:
+With `--json`, stdout is a single JSON document and logs go to stderr.
+Exit codes:
 
-```json
-{"archive":{"path":"/var/tmp/host-20260915T120000Z.zip","sha256":"…"},"collected_at_unix":1789000000,
- "manifest":{"summary":{"attempted":270,"collected":213,"missing":57,"failed":0,"bytes_archived":94371840}}}
-```
-
-| Exit | Meaning |
+| Code | Meaning |
 |-----:|---------|
-| `0` | everything requested was collected |
-| `1` | partial — check `manifest.entries` for `{"failed": reason}` items (missing *optional* artifacts alone do **not** mark partial) |
-| `2` | fatal — bad usage, unwritable output, unreadable config. No partial archive is produced |
+| 0 | everything requested was collected |
+| 1 | partial; look for `{"failed": reason}` entries in the manifest |
+| 2 | fatal (bad usage, unwritable output); no archive produced |
 
-## Downloads
+Missing optional artifacts (a user without `.bash_history`, etc.) count
+as `missing`, not `failed`, and do not change the exit code.
 
-Grab binaries from [Releases](../../releases); every release ships three static,
-dependency-free binaries and a `SHA256SUMS`:
+`tamatoa --help` lists all flags. Notes on a few:
 
-| Artifact | Platform |
-|----------|----------|
-| `tamatoa-x86_64-unknown-linux-musl.tar.gz` | Linux x86_64 — fully static (musl), runs on any glibc *or* musl distro |
-| `tamatoa-x86_64-pc-windows-msvc.zip` | Windows x86_64 |
-| `tamatoa-aarch64-apple-darwin.tar.gz` | macOS on Apple silicon |
+- `-c FILE` collects from a config file instead of the default set;
+  `-d FILE` adds a config file on top of the defaults. Both may be given.
+  Config format: one path or glob per line, `#` comments, `$VAR` /
+  `${VAR}` / `%VAR%` expansion. See CUSTOM_PATH_TEMPLATE.txt.
+- Positional `PATHS...` (files, directories, or globs) are collected in
+  addition to whatever else is selected.
+- `-of` must be a bare file name; combine with `-od DIR`. Existing files
+  are never overwritten without `--force`.
+- `-hf` is accepted for CyLR compatibility and does nothing; every
+  artifact is hashed anyway.
+- `--max-file-bytes` / `--max-total-bytes` (defaults 128 GiB / 1 TiB)
+  bound the collection against infinite or absurd sources.
 
-```sh
-sha256sum -c SHA256SUMS   # verify before you trust it on an IR target
-```
-
-Build from source with a stable Rust toolchain — **no C compilers needed**
-(the whole dependency tree is pure Rust):
-
-```sh
-cargo build --release
-```
-
-## Why tamatoa
-
-- **Seconds, not minutes.** Artifact globs are resolved directly; there is no
-  full-disk enumeration pass to "find files that match patterns".
-- **One read per byte.** Each artifact is read once, hashed (SHA-256) while it
-  streams into the archive, and never reopened.
-- **Evidence you can defend.** The archive carries a manifest; the sidecar
-  attests the archive's own digest; entry names are host-relative and
-  traversal-safe; timestamps and ordering are deterministic, so two identical
-  runs produce identical bytes.
-- **Harmless on live hosts.** Symlinks and special files are never followed or
-  read (no FIFO stalls, no `/dev/urandom` to infinity); explicit byte budgets
-  bound the collection; nothing is ever deleted or overwritten.
-- **Refuses to lie.** Failed sources are recorded with the real OS error —
-  never silently skipped, never emitted as empty placeholder entries. Missing
-  optional artifacts are reported separately from failures.
-- **Panic containment.** A panic inside one artifact (or the NTFS parser) fails
-  that one artifact; the archive still completes and the manifest records it.
+Run privileged where you can. Unprivileged runs still work; artifacts
+you cannot read are recorded as failures.
 
 ## What it collects
 
-**Windows** — `$Recycle.Bin` metadata (`$I*`), Event Logs, Prefetch, SRU,
-scheduled tasks + SchedLgU, startup items, Amcache, SetupAPI log, hosts file,
-per-user hives (`NTUSER.DAT`, `UsrClass.dat` + transaction LOGs — read via raw
-volume access when the OS locks them), `Recent`/Jump Lists/WebCache, Firefox +
-Chrome/Edge history, PowerShell console history, `$MFT`/`$LogFile`, and
+Windows: `$Recycle.Bin` metadata, Event Logs, Prefetch, SRU, scheduled
+tasks, startup items, Amcache, SetupAPI log, hosts file, user hives
+(NTUSER.DAT / UsrClass.dat + transaction logs; read through raw volume
+access when the OS locks them), Recent/Jump Lists/WebCache, browser
+history, PowerShell console history, `$MFT`/`$LogFile`, and
 `$UsnJrnl:$J` with `--usnjrnl`.
 
-**Linux** — shell history + dotfiles and SSH material for **every real
-account** (homes from `/etc/passwd`, so nonstandard homes are covered), cron/at
-scheduling, `systemd` units + init scripts, `/var/log` recursively, `fstab`,
-`resolv.conf`, apt sources + signing keys, modprobe/modules config, PAM +
-ssh config, GRUB and ACPI tables.
+Linux: shell histories and dotfiles for every account with a real home
+(from /etc/passwd, not just /home/*), ssh material, cron/at, systemd
+units, init scripts, /var/log recursively, fstab, resolv.conf, apt
+sources and keys, modprobe config, PAM and sshd config, grub and ACPI
+tables.
 
-**macOS** — plist preferences anchored to system/user Library locations, Chrome
-and Firefox data, TCC database, `.fseventsd`, launch agents/daemons, startup
-items, `/var/log` + diagnostics bundles, hosts/passwd/group.
+macOS: preference plists under the standard Library locations, Chrome
+and Firefox data, TCC database, .fseventsd, launch agents/daemons,
+startup items, /var/log and diagnostics, hosts/passwd/group.
 
-Run it and look at the manifest to see exactly what any given run collected.
+The manifest records exactly what any given run attempted and what
+happened to each entry.
 
-## Options
+## Behavior worth knowing
 
-`tamatoa --help` is the authoritative list (generated by the parser itself).
-CyLR's flags are accepted unchanged — `-of/-od/-zl/-hf` are normalized to their
-long forms before parsing.
-
-| Flag | Meaning |
-|------|---------|
-| `-v LEVEL` | `trace debug info warn error` (default `info`); `TAMATOA_LOG` env sets the default |
-| `-q` | quiet: errors only |
-| `-c FILE` | collect from config file **instead of** the default artifact set |
-| `-d FILE` | config file **in addition to** the default set (combine freely with `-c`) |
-| `-od DIR` | existing directory for the archive |
-| `-of NAME` | archive file name; default `<host>-<UTC timestamp>.zip` |
-| `--force` | overwrite an existing archive (refused otherwise — protects prior evidence) |
-| `--usnjrnl` | Windows: include `$UsnJrnl:$J` |
-| `-zl N` | deflate level 0–9; `0` stores entries uncompressed |
-| `-hf` | deprecated no-op — every artifact is SHA-256 hashed in-pass regardless |
-| `--json` | one machine-readable JSON line on stdout (logs go to stderr) |
-| `--max-file-bytes N` | per-artifact budget, default 128 GiB (`0` disables) |
-| `--max-total-bytes N` | run budget, default 1 TiB (`0` disables) |
-| `PATHS...` | files / directories (walked recursively) / globs; always collected |
-
-Privileges: run elevated where you can. Unprivileged execution is safe and
-still produces a valid archive — the artifacts it couldn't read are recorded as
-failures (exit 1) instead of silently missing.
+- Symlinks and special files (fifos, devices, sockets) are never
+  followed or opened. Directories are never read as files.
+- Failed artifacts are recorded with the real OS error. Nothing is
+  silently skipped and no empty placeholder entries are written.
+- A panic while processing one artifact (including inside the NTFS
+  parser) is caught, recorded as a failure, and the archive still
+  completes.
+- Archives are written 0600, entry names are host-relative and cannot
+  contain `..` or drive letters. Sorted entries, fixed timestamps: two
+  identical runs produce identical bytes.
+- File names and paths are escaped in all log output (`"\e[31m..."`
+  style) so a compromised host's file names cannot spoof the console.
 
 ## Output
 
 Given `-od /out -of host.zip`:
 
-- `/out/host.zip` (mode `0600`) — evidence archive. Entry names are
-  host-relative and zip-slip-safe (`host/c/Windows/System32/winevt/Logs/System.evtx`;
-  no `..`, no absolute paths, no drive-letter collisions).
-- `/out/host.zip.manifest.json` — sidecar attestation: archive SHA-256, per-source
-  status (`collected` / `missing` / `{"failed": reason}`), byte counts, tool
-  version + git hash, timestamps.
-- `tamatoa_manifest.json` — the same manifest **inside** the archive; the ZIP is
-  self-describing even if the sidecar is separated from it.
+- `/out/host.zip` - the evidence archive, containing
+  `tamatoa_manifest.json` (per-source status and SHA-256).
+- `/out/host.zip.manifest.json` - sidecar with the same manifest plus
+  the archive's own SHA-256, tool version and git hash, and timing.
 
-## Config files (`-c` / `-d`)
+## Building
 
-One entry per line; `#` comments; env expansion (`$VAR`, `${VAR}`, `%VAR%`);
-entries are files, directories, or globs (`*` stays within one directory, `**`
-spans directories). Full annotated sample:
-[CUSTOM_PATH_TEMPLATE.txt](CUSTOM_PATH_TEMPLATE.txt).
-
-```
-# /etc/tamatoa/ir-2026-09.txt
-$IR_CASE_DIR/**
-/var/log/**
-/home/*/.bash_history
-/etc/shadow
+```sh
+cargo build --release          # native
+cargo build --release --target x86_64-unknown-linux-musl  # static binary
 ```
 
-A config entry that matches nothing is recorded as `missing`; one that exists
-but can't be read is recorded as failed (exit 1). `-c` and `-d` both apply in
-the same run when passed together.
+No C toolchain is needed; the dependency tree is pure Rust.
 
-## Fidelity & CI
+Releases (tags `vX.Y.Z`, must match Cargo.toml) ship
+`tamatoa-x86_64-unknown-linux-musl.tar.gz` (static; runs on any glibc or
+musl host), `tamatoa-x86_64-pc-windows-msvc.zip`, and
+`tamatoa-aarch64-apple-darwin.tar.gz`, plus `SHA256SUMS`. Each binary is
+smoke-tested on its platform before packaging.
 
-Every commit is gated by CI ([rust.yml](.github/workflows/rust.yml)):
-
-- `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`
-- full test suite **debug and release profiles**, native on **Linux, Windows,
-  and macOS** runners (the raw-NTFS and registry code paths were never compiled
-  by CI before; now regressions there surface in the PR)
-- `cargo check` for every release target (musl, windows-msvc, aarch64-apple)
-- `cargo audit` on PRs plus a weekly poll of the advisory database
-
-Release builds ([release.yml](.github/workflows/release.yml)) run on tag `v*`
-with a tag-vs-`Cargo.toml` version gate; each binary is **smoke-tested on its
-own platform** before it is packaged; all actions pinned to commit SHAs.
+CI runs on every PR: fmt, clippy `-D warnings`, the test suite on
+Linux/Windows/macOS runners, release-profile tests, `cargo check` for
+all three release targets, and `cargo audit` (plus weekly). Actions are
+pinned to commit SHAs.
 
 ## License
 
-GPL-3.0 — see [LICENSE.md](LICENSE.md).
+GPL-3.0, see LICENSE.md.
 
-## Image attribution
-
-DALL-E / OpenAI.
+Image attribution: DALL-E / OpenAI.
