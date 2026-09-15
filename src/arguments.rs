@@ -132,7 +132,10 @@ pub struct CLIArguments {
     pub log_level: usize,
     pub log_file_path: String,
     pub zip_level: i32,
+    /// -c: entries replacing the default artifact set.
     pub collection_file_path: String,
+    /// -d: entries applied in addition to the default artifact set.
+    pub defaults_config_path: String,
     pub collect_defaults: bool,
 }
 
@@ -152,7 +155,11 @@ pub fn to_dto(cli: &Cli) -> CLIArguments {
         collection_file_path: cli
             .config
             .as_ref()
-            .or(cli.config_with_defaults.as_ref())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        defaults_config_path: cli
+            .config_with_defaults
+            .as_ref()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
         collect_defaults: cli.config_with_defaults.is_some(),

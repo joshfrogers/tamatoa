@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 mod archive;
 mod arguments;
 mod collection_paths;
-mod platform;
 mod version;
 
 #[cfg(target_os = "windows")]
@@ -98,9 +97,10 @@ fn execute(cli: &arguments::Cli) -> anyhow::Result<(CollectionStats, PathBuf)> {
     let stats = archive::collect(&collection_paths, &archive_path, &cfg)?;
     let sidecar = archive::sidecar_name(&archive_path);
     info!(
-        "Archive created: {} (collected={} failed={} bytes={})",
+        "Archive created: {} (collected={} missing={} failed={} bytes={})",
         archive_path.display(),
         stats.collected,
+        stats.missing,
         stats.failed,
         stats.bytes_archived
     );

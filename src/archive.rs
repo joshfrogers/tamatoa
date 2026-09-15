@@ -67,6 +67,10 @@ impl Default for ArchiveConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Collected,
+    /// Source does not exist. Optional artifacts being absent is the normal
+    /// case (service accounts without dotfiles); it does NOT mark the run
+    /// partial. Real errors (permission, IO, budget) are `Failed`.
+    NotFound(String),
     Failed(String),
 }
 
@@ -82,6 +86,7 @@ pub struct EntryRecord {
 #[derive(Debug, Default)]
 pub struct CollectionStats {
     pub collected: usize,
+    pub missing: usize,
     pub failed: usize,
     pub bytes_archived: u64,
 }
@@ -191,23 +196,34 @@ fn open_artifact(path: &Path) -> Result<File> {
 }
 
 /// Preflight classification before anything is opened.
-fn classify(path: &Path) -> Option<String> {
+fn classify(path: &Path) -> Option<Outcome> {
     let md = match std::fs::symlink_metadata(path) {
         Ok(md) => md,
-        Err(e) => return Some(format!("stat failed: {e}")),
+        Err(e) => {
+            let msg = format!("stat failed: {e}");
+            return Some(if e.kind() == std::io::ErrorKind::NotFound {
+                Outcome::NotFound(msg)
+            } else {
+                Outcome::Failed(msg)
+            });
+        }
     };
     let ft = md.file_type();
     if ft.is_symlink() {
         let target = std::fs::read_link(path)
             .map(|t| t.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "?".into());
-        return Some(format!("symlink to {target} (not followed)"));
+        return Some(Outcome::Failed(format!(
+            "symlink to {target} (not followed)"
+        )));
     }
     if ft.is_dir() {
-        return Some("directory (collectors must expand directories)".into());
+        return Some(Outcome::Failed(
+            "directory (collectors must expand directories)".into(),
+        ));
     }
     if !ft.is_file() {
-        return Some("special file (fifo/socket/device)".into());
+        return Some(Outcome::Failed("special file (fifo/socket/device)".into()));
     }
     None
 }
@@ -256,16 +272,22 @@ pub fn collect(
     let mut copy_buf = vec![0u8; COPY_BUF_BYTES];
 
     for path in sorted {
-        if let Some(reason) = classify(path) {
-            debug!("skipping {}: {reason}", path.display());
+        if let Some(outcome) = classify(path) {
+            let missing = matches!(outcome, Outcome::NotFound(_));
+            if missing {
+                debug!("artifact absent {}: {outcome:?}", path.display());
+                stats.missing += 1;
+            } else {
+                warn!("{}: skipped: {outcome:?}", path.display());
+                stats.failed += 1;
+            }
             records.push(EntryRecord {
                 source: path.clone(),
-                outcome: Outcome::Failed(reason),
+                outcome,
                 entry_name: None,
                 sha256: None,
                 size: 0,
             });
-            stats.failed += 1;
             continue;
         }
 
@@ -301,15 +323,31 @@ pub fn collect(
             Ok(f) => f,
             Err(e) => {
                 entry_names.remove(&entry);
+                // TOCTOU race after classify, or unreadable: distinguish a
+                // vanished file from a real I/O error.
+                let gone = e
+                    .chain()
+                    .find_map(|c| c.downcast_ref::<std::io::Error>())
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+                let outcome = if gone {
+                    Outcome::NotFound(e.to_string())
+                } else {
+                    Failed(e.to_string())
+                };
+                if gone {
+                    debug!("{} vanished before open", path.display());
+                    stats.missing += 1;
+                } else {
+                    warn!("{}: skipped: {e}", path.display());
+                    stats.failed += 1;
+                }
                 records.push(EntryRecord {
                     source: path.clone(),
-                    outcome: Failed(e.to_string()),
+                    outcome,
                     entry_name: None,
                     sha256: None,
                     size: 0,
                 });
-                stats.failed += 1;
-                warn!("{}: skipped: {e}", path.display());
                 continue;
             }
         };
@@ -407,6 +445,7 @@ pub fn collect(
                 "size": r.size,
                 "status": match &r.outcome {
                     Outcome::Collected => json!("collected"),
+                    Outcome::NotFound(_) => json!("missing"),
                     Outcome::Failed(reason) => json!({"failed": reason}),
                 }
             })
@@ -418,6 +457,7 @@ pub fn collect(
         "summary": {
             "attempted": records.len(),
             "collected": stats.collected,
+            "missing": stats.missing,
             "failed": stats.failed,
             "bytes_archived": stats.bytes_archived,
         },
@@ -642,6 +682,60 @@ mod tests {
         ah.update(&abuf);
         assert_eq!(side["archive"]["sha256"], to_hex(ah.finalize()));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn absent_sources_are_missing_not_failed() {
+        let dir = temp_fixture("missing");
+        std::fs::write(dir.join("present.txt"), b"x").unwrap();
+        std::fs::create_dir(dir.join("adir")).unwrap();
+        // Absent file (parent exists): normal for optional artifacts.
+        let absent = dir.join("absent.txt");
+        // Directory: a real failure (collector contract violation).
+        let stats = collect(
+            &[dir.join("present.txt"), absent, dir.join("adir")],
+            &dir.join("out.zip"),
+            &ArchiveConfig {
+                host: "T".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.collected, 1);
+        assert_eq!(stats.missing, 1, "absent source classified missing");
+        assert_eq!(stats.failed, 1, "directory is a real failure");
+        assert!(stats.is_partial(), "failed>0 marks the run partial");
+
+        // The manifest records the status taxonomy verbatim.
+        let mut z = zip::ZipArchive::new(File::open(dir.join("out.zip")).unwrap()).unwrap();
+        let m: serde_json::Value =
+            serde_json::from_reader(z.by_name("tamatoa_manifest.json").unwrap()).unwrap();
+        let statuses: Vec<&str> = m["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["status"].as_str().unwrap_or("failed"))
+            .collect();
+        assert!(statuses.contains(&"missing"), "{statuses:?}");
+        assert!(statuses.contains(&"collected"), "{statuses:?}");
+        assert_eq!(m["summary"]["missing"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn only_missing_sources_still_exits_complete() {
+        let dir = temp_fixture("onlymissing");
+        std::fs::write(dir.join("p.txt"), b"x").unwrap();
+        let stats = collect(
+            &[dir.join("p.txt"), dir.join("gone.txt")],
+            &dir.join("out.zip"),
+            &ArchiveConfig {
+                host: "T".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(stats.missing, 1);
+        assert!(!stats.is_partial(), "absence alone is not partial");
     }
 
     #[test]
