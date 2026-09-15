@@ -121,51 +121,6 @@ impl Cli {
     }
 }
 
-/// Legacy view consumed by the path-collection layer; replaced when the
-/// collector is rewritten.
-#[derive(Debug, Clone)]
-pub struct CLIArguments {
-    pub output_path: String,
-    pub collection_files: Vec<String>,
-    pub with_usnjrnl: bool,
-    pub hash_files: bool,
-    pub log_level: usize,
-    pub log_file_path: String,
-    pub zip_level: i32,
-    /// -c: entries replacing the default artifact set.
-    pub collection_file_path: String,
-    /// -d: entries applied in addition to the default artifact set.
-    pub defaults_config_path: String,
-    pub collect_defaults: bool,
-}
-
-pub fn to_dto(cli: &Cli) -> CLIArguments {
-    CLIArguments {
-        output_path: String::new(),
-        collection_files: cli
-            .paths
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect(),
-        with_usnjrnl: cli.usnjrnl,
-        hash_files: cli.hash_files,
-        log_level: 0,
-        log_file_path: String::new(),
-        zip_level: cli.zip_level as i32,
-        collection_file_path: cli
-            .config
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        defaults_config_path: cli
-            .config_with_defaults
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        collect_defaults: cli.config_with_defaults.is_some(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

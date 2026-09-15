@@ -279,17 +279,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive-try-from-primitive"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "302ccf094df1151173bb6f5a2282fcd2f45accd5eae1bdf82dcbfefbc501ad5c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.98",
-]
-
-[[package]]
 name = "derive_arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -772,7 +761,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "time",
- "windows-drives",
  "winreg",
  "zip",
 ]
@@ -854,16 +842,6 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
-
-[[package]]
-name = "windows-drives"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60cf3fce9945bd1348ea2732993324b360fb278090094d71c7bb6c5e6ea4c74b"
-dependencies = [
- "derive-try-from-primitive",
- "winapi",
-]
 
 [[package]]
 name = "windows-link"

@@ -8,7 +8,7 @@
 //! pruned). Work is proportional to what is collected, not to the size of the
 //! disk. Results are deduplicated and ordered deterministically.
 
-use crate::arguments::CLIArguments;
+use crate::arguments::Cli;
 use anyhow::{Context, Result};
 use glob::{glob_with, MatchOptions};
 use log::{debug, error, info, warn};
@@ -22,10 +22,7 @@ use winreg::RegKey;
 
 #[derive(Default, Debug)]
 pub struct UserProfile {
-    pub user_key: String,
-    pub path: String,
     pub profile_path: String,
-    pub full_profile: u32,
 }
 
 /// Top-level pseudo/volatile filesystems never contain collectable evidence on
@@ -253,27 +250,22 @@ fn validated_env_base(name: &str, default: &str) -> String {
     }
 }
 
-pub fn get_paths(
-    cli_args: &CLIArguments,
-    additional_paths: &[String],
-    usnjrnl: &bool,
-) -> Result<Vec<PathBuf>> {
+pub fn get_paths(cli: &Cli) -> Result<Vec<PathBuf>> {
     let mut collection_paths: Vec<PathBuf> = vec![];
     let mut seen: HashSet<PathBuf> = HashSet::new();
 
     // 1. Config file entries (-c replaces defaults, -d adds to them).
     for (path, label) in [
-        (cli_args.collection_file_path.as_str(), "-c"),
-        (cli_args.defaults_config_path.as_str(), "-d"),
+        (cli.config.as_deref(), "-c"),
+        (cli.config_with_defaults.as_deref(), "-d"),
     ] {
-        if path.is_empty() {
-            continue;
-        }
-        let entries = parse_config(Path::new(path))
-            .with_context(|| format!("loading config file ({label})"))?;
+        let Some(path) = path else { continue };
+        let entries =
+            parse_config(path).with_context(|| format!("loading config file ({label})"))?;
         info!(
-            "Loaded {} entries from config {label} ({path})",
-            entries.len()
+            "Loaded {} entries from config {label} ({})",
+            entries.len(),
+            path.display()
         );
         for entry in entries {
             add_entry(&entry, &mut collection_paths, &mut seen);
@@ -281,15 +273,15 @@ pub fn get_paths(
     }
 
     // 2. Positional paths always collect, with or without a config file.
-    for entry in additional_paths {
-        add_entry(entry, &mut collection_paths, &mut seen);
+    for entry in &cli.paths {
+        add_entry(&entry.to_string_lossy(), &mut collection_paths, &mut seen);
     }
 
     // 3. Default artifact sets.
-    if cli_args.collection_file_path.is_empty() || cli_args.collect_defaults {
+    if cli.config.is_none() || cli.config_with_defaults.is_some() {
         info!("Enumerating paths for default artifact collection");
         if cfg!(target_os = "windows") {
-            default_windows(&mut collection_paths, &mut seen, *usnjrnl);
+            default_windows(&mut collection_paths, &mut seen, cli.usnjrnl);
         } else if mac_folders() {
             info!("macOS platform detected");
             default_mac(&mut collection_paths, &mut seen);
@@ -634,10 +626,7 @@ pub fn find_users() -> Vec<UserProfile> {
             let home = fields[5];
             if home.starts_with('/') && !home.is_empty() {
                 users.push(UserProfile {
-                    user_key: fields[0].to_string(),
-                    path: line.to_string(),
                     profile_path: home.to_string(),
-                    full_profile: 1,
                 });
             }
         }
@@ -660,13 +649,7 @@ pub fn find_users() -> Vec<UserProfile> {
                 let profile_path: String = working_profile
                     .get_value("ProfileImagePath")
                     .unwrap_or_default();
-                let full_profile: u32 = working_profile.get_value("FullProfile").unwrap_or(0);
-                user_vec.push(UserProfile {
-                    user_key: user,
-                    path: format!("HKEY_LOCAL_MACHINE\\{path}\\ProfileImagePath"),
-                    profile_path,
-                    full_profile,
-                });
+                user_vec.push(UserProfile { profile_path });
             }
         }
         user_vec

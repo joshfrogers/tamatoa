@@ -71,9 +71,7 @@ fn init_logging(cli: &arguments::Cli) {
 fn execute(cli: &arguments::Cli) -> anyhow::Result<(CollectionStats, PathBuf)> {
     // Fail fast on bad output targets before paying for path enumeration.
     let archive_path = resolve_output_path(cli)?;
-    let dto = arguments::to_dto(cli);
-    let collection_paths = get_paths(&dto, &dto.collection_files, &dto.with_usnjrnl)
-        .context("resolving collection paths")?;
+    let collection_paths = get_paths(cli).context("resolving collection paths")?;
     if collection_paths.is_empty() {
         return Err(anyhow!("no paths matched for collection"));
     }
