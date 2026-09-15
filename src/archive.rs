@@ -16,9 +16,10 @@
 
 use crate::version;
 use anyhow::{anyhow, Context, Result};
-use log::{debug, warn};
+use log::{debug, error, warn};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -26,6 +27,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
+/// Outcome variant shorthand used throughout this module.
+use Outcome::Failed;
 
 /// 256 KiB streaming buffer: large enough to keep syscall counts sane on bulk
 /// copies, small enough to stay in L2 on any endpoint.
@@ -228,6 +231,155 @@ fn classify(path: &Path) -> Option<Outcome> {
     None
 }
 
+/// Process exactly one artifact: classify, name, open, stream into the zip,
+/// record outcome. Split out so `collect` can run it inside `catch_unwind`.
+fn collect_one(
+    path: &Path,
+    zip: &mut ZipWriter<BufWriter<&mut File>>,
+    cfg: &ArchiveConfig,
+    stats: &mut CollectionStats,
+    records: &mut Vec<EntryRecord>,
+    entry_names: &mut HashSet<String>,
+    copy_buf: &mut [u8],
+) {
+    let mut record =
+        |outcome: Outcome, entry_name: Option<String>, sha256: Option<String>, size: u64| {
+            records.push(EntryRecord {
+                source: path.to_path_buf(),
+                outcome,
+                entry_name,
+                sha256,
+                size,
+            });
+        };
+
+    if let Some(outcome) = classify(path) {
+        let missing = matches!(outcome, Outcome::NotFound(_));
+        if missing {
+            debug!("artifact absent {}: {outcome:?}", path.display());
+            stats.missing += 1;
+        } else {
+            warn!("{}: skipped: {outcome:?}", path.display());
+            stats.failed += 1;
+        }
+        record(outcome, None, None, 0);
+        return;
+    }
+
+    let entry = match entry_name(&cfg.host, path) {
+        Ok(e) => e,
+        Err(e) => {
+            stats.failed += 1;
+            record(Failed(e.to_string()), None, None, 0);
+            return;
+        }
+    };
+    if !entry_names.insert(entry.clone()) {
+        stats.failed += 1;
+        record(
+            Failed(format!("duplicate zip entry name: {entry}")),
+            None,
+            None,
+            0,
+        );
+        return;
+    }
+
+    // The entry starts only once the bytes are definitely coming: no
+    // placeholder entries for files that cannot be opened.
+    let mut src = match open_artifact(path) {
+        Ok(f) => f,
+        Err(e) => {
+            entry_names.remove(&entry);
+            // TOCTOU race after classify, or unreadable: distinguish a
+            // vanished file from a real I/O error.
+            let gone = e
+                .chain()
+                .find_map(|c| c.downcast_ref::<std::io::Error>())
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+            let outcome = if gone {
+                Outcome::NotFound(e.to_string())
+            } else {
+                Failed(e.to_string())
+            };
+            if gone {
+                debug!("{} vanished before open", path.display());
+                stats.missing += 1;
+            } else {
+                warn!("{}: skipped: {e}", path.display());
+                stats.failed += 1;
+            }
+            record(outcome, None, None, 0);
+            return;
+        }
+    };
+
+    if let Err(e) = zip.start_file(&entry, file_options_for(path, cfg)) {
+        stats.failed += 1;
+        record(Failed(format!("zip start: {e}")), None, None, 0);
+        return;
+    }
+
+    let mut hasher = Sha256::new();
+    let mut size: u64 = 0;
+    let mut failure: Option<String> = None;
+    loop {
+        if cfg.max_file_bytes > 0 && size > cfg.max_file_bytes {
+            failure = Some(format!(
+                "exceeded per-file budget of {} bytes",
+                cfg.max_file_bytes
+            ));
+            break;
+        }
+        if cfg.max_total_bytes > 0 && stats.bytes_archived + size > cfg.max_total_bytes {
+            failure = Some(format!(
+                "exceeded total collection budget of {} bytes",
+                cfg.max_total_bytes
+            ));
+            break;
+        }
+        match src.read(copy_buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                hasher.update(&copy_buf[..n]);
+                if let Err(e) = zip.write_all(&copy_buf[..n]) {
+                    failure = Some(format!("archive write failed: {e}"));
+                    break;
+                }
+                size += n as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                failure = Some(format!("read failed: {e}"));
+                break;
+            }
+        }
+    }
+
+    match failure {
+        None => {
+            stats.collected += 1;
+            stats.bytes_archived += size;
+            record(
+                Outcome::Collected,
+                Some(entry),
+                Some(hex_digest(&hasher)),
+                size,
+            );
+        }
+        Some(reason) => {
+            // Drop the incomplete entry entirely: a truncated file that
+            // looks complete is worse forensic evidence than none.
+            if let Err(e) = zip.abort_file() {
+                warn!("aborting entry {entry}: {e}");
+            }
+            entry_names.remove(&entry);
+            stats.failed += 1;
+            record(Failed(reason), None, None, 0);
+        }
+    }
+}
+
 /// Collect `paths` into a new zip archive. Returns stats plus the archive's
 /// hex SHA-256. Per-artifact failures are recorded, never fatal; structural
 /// failures (cannot create output) return Err.
@@ -272,162 +424,42 @@ pub fn collect(
     let mut copy_buf = vec![0u8; COPY_BUF_BYTES];
 
     for path in sorted {
-        if let Some(outcome) = classify(path) {
-            let missing = matches!(outcome, Outcome::NotFound(_));
-            if missing {
-                debug!("artifact absent {}: {outcome:?}", path.display());
-                stats.missing += 1;
-            } else {
-                warn!("{}: skipped: {outcome:?}", path.display());
-                stats.failed += 1;
+        // One artifact must never take down the run: zip-crate bugs, exotic
+        // paths, or panics in platform fallbacks become a recorded failure,
+        // the archive still finishes.
+        let guarded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            collect_one(
+                path,
+                &mut zip,
+                cfg,
+                &mut stats,
+                &mut records,
+                &mut entry_names,
+                &mut copy_buf,
+            )
+        }));
+        if let Err(payload) = guarded {
+            let msg = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "unknown panic".to_string());
+            error!("panic while collecting {}: {msg}", path.display());
+            // If the panic happened after start_file, drop the partial entry
+            // (an error here just means no entry was open: safe to ignore).
+            if zip.abort_file().is_ok() {
+                if let Some(name) = entry_name(&cfg.host, path).ok() {
+                    entry_names.remove(&name);
+                }
             }
-            records.push(EntryRecord {
-                source: path.clone(),
-                outcome,
-                entry_name: None,
-                sha256: None,
-                size: 0,
-            });
-            continue;
-        }
-
-        let entry = match entry_name(&cfg.host, path) {
-            Ok(e) => e,
-            Err(e) => {
-                records.push(EntryRecord {
-                    source: path.clone(),
-                    outcome: Failed(e.to_string()),
-                    entry_name: None,
-                    sha256: None,
-                    size: 0,
-                });
-                stats.failed += 1;
-                continue;
-            }
-        };
-        if !entry_names.insert(entry.clone()) {
-            records.push(EntryRecord {
-                source: path.clone(),
-                outcome: Failed(format!("duplicate zip entry name: {entry}")),
-                entry_name: None,
-                sha256: None,
-                size: 0,
-            });
             stats.failed += 1;
-            continue;
-        }
-
-        // The entry starts only once the bytes are definitely coming: no
-        // placeholder entries for files that cannot be opened.
-        let mut src = match open_artifact(path) {
-            Ok(f) => f,
-            Err(e) => {
-                entry_names.remove(&entry);
-                // TOCTOU race after classify, or unreadable: distinguish a
-                // vanished file from a real I/O error.
-                let gone = e
-                    .chain()
-                    .find_map(|c| c.downcast_ref::<std::io::Error>())
-                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
-                let outcome = if gone {
-                    Outcome::NotFound(e.to_string())
-                } else {
-                    Failed(e.to_string())
-                };
-                if gone {
-                    debug!("{} vanished before open", path.display());
-                    stats.missing += 1;
-                } else {
-                    warn!("{}: skipped: {e}", path.display());
-                    stats.failed += 1;
-                }
-                records.push(EntryRecord {
-                    source: path.clone(),
-                    outcome,
-                    entry_name: None,
-                    sha256: None,
-                    size: 0,
-                });
-                continue;
-            }
-        };
-
-        if let Err(e) = zip.start_file(&entry, file_options_for(path, cfg)) {
             records.push(EntryRecord {
                 source: path.clone(),
-                outcome: Failed(format!("zip start: {e}")),
+                outcome: Failed(format!("panicked while collecting: {msg}")),
                 entry_name: None,
                 sha256: None,
                 size: 0,
             });
-            stats.failed += 1;
-            continue;
-        }
-
-        let mut hasher = Sha256::new();
-        let mut size: u64 = 0;
-        let mut failure: Option<String> = None;
-        loop {
-            if cfg.max_file_bytes > 0 && size > cfg.max_file_bytes {
-                failure = Some(format!(
-                    "exceeded per-file budget of {} bytes",
-                    cfg.max_file_bytes
-                ));
-                break;
-            }
-            if cfg.max_total_bytes > 0 && stats.bytes_archived + size > cfg.max_total_bytes {
-                failure = Some(format!(
-                    "exceeded total collection budget of {} bytes",
-                    cfg.max_total_bytes
-                ));
-                break;
-            }
-            match src.read(&mut copy_buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    hasher.update(&copy_buf[..n]);
-                    if let Err(e) = zip.write_all(&copy_buf[..n]) {
-                        failure = Some(format!("archive write failed: {e}"));
-                        break;
-                    }
-                    size += n as u64;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(e) => {
-                    failure = Some(format!("read failed: {e}"));
-                    break;
-                }
-            }
-        }
-
-        match failure {
-            None => {
-                stats.collected += 1;
-                stats.bytes_archived += size;
-                records.push(EntryRecord {
-                    source: path.clone(),
-                    outcome: Outcome::Collected,
-                    entry_name: Some(entry),
-                    sha256: Some(hex_digest(&hasher)),
-                    size,
-                });
-            }
-            Some(reason) => {
-                // Drop the incomplete entry entirely: a truncated file that
-                // looks complete is worse forensic evidence than none.
-                if let Err(e) = zip.abort_file() {
-                    warn!("aborting entry {entry}: {e}");
-                }
-                entry_names.remove(&entry);
-                records.push(EntryRecord {
-                    source: path.clone(),
-                    outcome: Failed(reason),
-                    entry_name: None,
-                    sha256: None,
-                    size: 0,
-                });
-                stats.failed += 1;
-            }
         }
     }
 
