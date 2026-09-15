@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Cargo dependencies. Dependabot PRs flow through the full CI gate
+  # (fmt/clippy/tests on 3 OSes + cross-targets + audit), so updates are
+  # verified before merge by construction.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    groups:
+      # One grouped PR per week instead of one per crate.
+      cargo-all:
+        patterns: ["*"]
+
+  # Workflow pins: dependabot keeps SHA-pinned `uses:` lines current
+  # (it reads the `# vN.N.N` comment and rewrites the SHA).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
