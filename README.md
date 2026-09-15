@@ -122,7 +122,7 @@ pinned to commit SHAs.
 
 ## License
 
-GPL-3.0 — see LICENSE.
+GPL-3.0 — see LICENSE.md.
 
 ## Image attribution
 
