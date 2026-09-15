@@ -29,7 +29,8 @@ use zip::result::ZipResult;
 
 #[cfg(target_os = "windows")]
 mod ntfs_driver;
-#[cfg(target_os = "windows")]
+// Compiled for Windows use and exercised by unit tests on all platforms.
+#[cfg(any(test, target_os = "windows"))]
 mod sector_reader;
 #[cfg(target_os = "windows")]
 use crate::ntfs_driver::{cd, get};
