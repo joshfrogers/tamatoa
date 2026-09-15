@@ -53,10 +53,21 @@ pub fn add_entry(raw_entry: &str, out: &mut Vec<PathBuf>, seen: &mut HashSet<Pat
     if entry.is_empty() || entry.starts_with('#') {
         return;
     }
+    // The glob crate speaks `/`; Windows callers build patterns with `\`.
+    let pattern = entry.replace('\\', "/");
 
-    if is_glob(entry) {
-        // The glob crate speaks `/`; Windows callers build patterns with `\`.
-        let pattern = entry.replace('\\', "/");
+    // A trailing bare `**` (directory subtree) does not do what the artifact
+    // set needs: glob_with("dir/**") misses files directly inside `dir` and
+    // only matches paths nested at least one directory deeper. Resolving the
+    // parent through the normal path (glob it if it is a pattern, walk it if
+    // it is a directory) gives the intended subtree semantics with pruning
+    // and symlink policy intact.
+    if let Some(parent) = pattern.strip_suffix("/**") {
+        add_entry(parent, out, seen);
+        return;
+    }
+
+    if is_glob(&pattern) {
         match glob_with(&pattern, match_options()) {
             Ok(paths) => {
                 for path in paths {
@@ -345,6 +356,7 @@ fn default_windows(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, usnjrnl:
         "System32\\Tasks",
         "System32\\LogFiles\\W3SVC1",
         "Appcompat\\Programs",
+        "Minidumps",
     ] {
         entries.push(format!("{system_root}\\{sub}\\**"));
     }
@@ -361,6 +373,7 @@ fn default_windows(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, usnjrnl:
         "System32\\config\\SAM",
         "System32\\config\\SYSTEM",
         "System32\\config\\SOFTWARE",
+        "System32\\config\\DEFAULT",
         "System32\\config\\SECURITY",
     ] {
         for ext in ["", ".LOG1", ".LOG2"] {
@@ -380,6 +393,10 @@ fn default_windows(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, usnjrnl:
     if usnjrnl {
         exists_push(format!("{system_drive}\\$Extend\\$UsnJrnl:$J"), out, seen);
     }
+    exists_push(format!("{system_root}\\Debug\\NetSetup.LOG"), out, seen);
+    entries.push(format!(
+        "{program_data}\\Microsoft\\Windows Defender\\Support\\MPLog-*"
+    ));
 
     apply(entries, out, seen);
 
@@ -409,14 +426,35 @@ fn default_windows(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, usnjrnl:
             format!("{pp}\\AppData\\Local\\Microsoft\\Windows\\UsrClass.dat"),
             format!("{pp}\\AppData\\Local\\Microsoft\\Windows\\UsrClass.dat.LOG1"),
             format!("{pp}\\AppData\\Local\\Microsoft\\Windows\\UsrClass.dat.LOG2"),
-            format!("{pp}\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\History"),
-            format!("{pp}\\AppData\\Local\\Microsoft\\Edge\\User Data\\Default\\History"),
             format!(
                 "{pp}\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadline\\ConsoleHost_history.txt"
             ),
         ] {
             exists_push(literal, out, seen);
         }
+        // Every Chrome/Edge profile (Default, Profile 1, ...), not just
+        // Default; Network/ holds the post-v127 cookie store; Local State
+        // carries the key material that decrypts Login Data.
+        apply(
+            [
+                format!("{pp}\\AppData\\Local\\Google\\Chrome\\User Data\\*\\History*"),
+                format!("{pp}\\AppData\\Local\\Google\\Chrome\\User Data\\*\\Login Data*"),
+                format!("{pp}\\AppData\\Local\\Google\\Chrome\\User Data\\*\\Web Data*"),
+                format!("{pp}\\AppData\\Local\\Google\\Chrome\\User Data\\*\\Bookmarks*"),
+                format!("{pp}\\AppData\\Local\\Google\\Chrome\\User Data\\*\\Preferences*"),
+                format!("{pp}\\AppData\\Local\\Google\\Chrome\\User Data\\*\\Network\\Cookies*"),
+                format!("{pp}\\AppData\\Local\\Google\\Chrome\\User Data\\Local State"),
+                format!("{pp}\\AppData\\Local\\Microsoft\\Edge\\User Data\\*\\History*"),
+                format!("{pp}\\AppData\\Local\\Microsoft\\Edge\\User Data\\*\\Login Data*"),
+                format!("{pp}\\AppData\\Local\\Microsoft\\Edge\\User Data\\*\\Web Data*"),
+                format!("{pp}\\AppData\\Local\\Microsoft\\Edge\\User Data\\*\\Bookmarks*"),
+                format!("{pp}\\AppData\\Local\\Microsoft\\Edge\\User Data\\*\\Preferences*"),
+                format!("{pp}\\AppData\\Local\\Microsoft\\Edge\\User Data\\*\\Network\\Cookies*"),
+                format!("{pp}\\AppData\\Local\\Microsoft\\Edge\\User Data\\Local State"),
+            ],
+            out,
+            seen,
+        );
     }
 }
 
@@ -426,28 +464,75 @@ fn default_windows(_out: &mut Vec<PathBuf>, _seen: &mut HashSet<PathBuf>, _usnjr
     unreachable!("default_windows called on non-Windows target")
 }
 
-/// macOS Chrome/Firefox/preferences used to be matched with disk-wide
-/// `**/...` patterns (every plist on the volume). They are anchored to the
-/// real library locations instead: system, all user homes, root's home.
+/// Per-account dotfiles collected on Linux and macOS.
+const USER_DOTFILES: &[&str] = &[
+    ".ssh/known_hosts",
+    ".ssh/config",
+    ".ssh/id_rsa",
+    ".ssh/id_ecdsa",
+    ".ssh/id_ed25519",
+    ".ssh/authorized_keys",
+    ".bash_history",
+    ".zsh_history",
+    ".sh_history",
+    ".viminfo",
+    ".profile",
+    ".bashrc",
+    ".zshrc",
+    ".bash_logout",
+    ".zsh_logout",
+    ".selected_editor",
+    ".wget-hsts",
+    ".gitconfig",
+];
+
+/// Chrome/Firefox/Safari and preferences anchored to the real library
+/// locations (system, every user home, root's home) instead of the old
+/// disk-wide `**/...` patterns that matched every plist on the volume.
 fn default_mac(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
     let home_roots = ["/Users", "/private/var/root"];
     let mut entries: Vec<String> = vec![];
     for root in home_roots {
-        entries.push(format!(
-            "{root}/*/Library/Application Support/Google/Chrome/Default/*"
-        ));
-        entries.push(format!(
-            "{root}/*/Library/Application Support/Google/Chrome/Default/Extensions/**"
-        ));
         entries.push(format!("{root}/*/Library/Application Support/Firefox/**"));
         entries.push(format!("{root}/*/Library/Preferences/**"));
         entries.push(format!("{root}/*/.*/**history"));
         entries.push(format!(
             "{root}/*/Library/Application Support/com.apple.TCC/TCC.db*"
         ));
+        // Per-account shell history and ssh material. macOS local accounts
+        // are not reliably in /etc/passwd (Directory Services owns them),
+        // so /Users/* globbing is the enumeration here.
+        for suffix in USER_DOTFILES {
+            entries.push(format!("{root}/*/{suffix}"));
+        }
+        entries.push(format!("{root}/*/Library/LaunchAgents/**"));
+        for suffix in [
+            "Library/Safari/History*",
+            "Library/Safari/CloudTabs.db*",
+            "Library/Safari/Bookmarks.plist",
+            "Library/Cookies/Cookies.binarycookies",
+        ] {
+            entries.push(format!("{root}/*/{suffix}"));
+        }
+        for chrome in [
+            "*/History*",
+            "*/Cookies*",
+            "*/Login Data*",
+            "*/Web Data*",
+            "*/Bookmarks*",
+            "*/Preferences*",
+            "*/Network/Cookies*",
+            "*/Extensions/**",
+            "Local State*",
+        ] {
+            entries.push(format!(
+                "{root}/*/Library/Application Support/Google/Chrome/{chrome}"
+            ));
+        }
     }
     entries.extend([
         "/Library/Application Support/Google/Chrome/Default/*".to_string(),
+        "/Library/Application Support/com.apple.TCC/TCC.db*".to_string(),
         "/Library/Preferences/**".to_string(),
         "/System/Library/StartupItems/**".to_string(),
         "/System/Library/LaunchAgents/**".to_string(),
@@ -458,8 +543,16 @@ fn default_mac(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
         "/var/log/**".to_string(),
         "/private/var/log/**".to_string(),
         "/private/var/db/diagnostics/**".to_string(),
+        // Unified-log entries reference strings by UUID; without uuidtext
+        // the diagnostics bundles do not decode.
+        "/private/var/db/uuidtext/**".to_string(),
         "/private/etc/rc.d/**".to_string(),
         "/etc/rc.d/**".to_string(),
+        "/private/etc/sudoers.d/**".to_string(),
+        "/private/etc/pam.d/**".to_string(),
+        "/private/etc/ssh/**".to_string(),
+        "/private/etc/defaults/**".to_string(),
+        "/private/var/at/**".to_string(),
         "/.fseventsd/**".to_string(),
     ]);
     apply(entries, out, seen);
@@ -475,6 +568,9 @@ fn default_mac(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
         "/etc/group",
         "/private/etc/passwd",
         "/private/etc/group",
+        "/private/etc/sudoers",
+        "/private/etc/master.passwd",
+        "/private/etc/pf.conf",
     ] {
         exists_push(literal.to_string(), out, seen);
     }
@@ -495,26 +591,12 @@ fn default_linux(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
     homes.sort();
     homes.dedup();
     for home in homes {
-        for suffix in [
-            ".ssh/known_hosts",
-            ".ssh/config",
-            ".ssh/id_rsa",
-            ".ssh/id_ed25519",
-            ".ssh/authorized_keys",
-            ".bash_history",
-            ".zsh_history",
-            ".sh_history",
-            ".viminfo",
-            ".profile",
-            ".bashrc",
-            ".zshrc",
-            ".bash_logout",
-            ".zsh_logout",
-            ".selected_editor",
-            ".wget-hsts",
-            ".gitconfig",
-        ] {
+        for suffix in USER_DOTFILES {
             entries.push(format!("{home}/{suffix}"));
+        }
+        // User-level persistence: systemd user units and autostart entries.
+        for extra in [".config/systemd/**", ".config/autostart/*.desktop"] {
+            entries.push(format!("{home}/{extra}"));
         }
         entries.push(format!("{home}/.mozilla/firefox/*.default*/**/*.sqlite*"));
         entries.push(format!("{home}/.mozilla/firefox/*.default*/**/*.json"));
@@ -533,12 +615,16 @@ fn default_linux(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
                 "Login Data*",
                 "Web Data*",
             ] {
-                entries.push(format!("{home}/{browser_dir}/Default/{name}"));
+                // `*` = every profile (Default, Profile 1, ...), not just Default.
+                entries.push(format!("{home}/{browser_dir}/*/{name}"));
             }
-            entries.push(format!("{home}/{browser_dir}/Default/Extensions/**"));
+            entries.push(format!("{home}/{browser_dir}/*/Extensions/**"));
+            // Chrome >= 127 moved cookies under the profile's Network dir.
+            entries.push(format!("{home}/{browser_dir}/*/Network/Cookies*"));
+            // Key material for the profile's encrypted Login Data.
+            entries.push(format!("{home}/{browser_dir}/Local State*"));
         }
     }
-
     entries.extend([
         // Boot / firmware
         "/boot/grub/grub.cfg".to_string(),
@@ -553,6 +639,7 @@ fn default_linux(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
         "/etc/shadow".to_string(),
         "/etc/gshadow".to_string(),
         "/etc/sudoers".to_string(),
+        "/etc/sudoers.d/**".to_string(),
         "/etc/crontab".to_string(),
         "/etc/cron.allow".to_string(),
         "/etc/cron.deny".to_string(),
@@ -566,8 +653,17 @@ fn default_linux(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
         "/etc/apt/trustdb.gpg".to_string(),
         "/etc/resolv.conf".to_string(),
         "/etc/fstab".to_string(),
-        "/etc/issues".to_string(),
-        "/etc/issues.net".to_string(),
+        "/etc/ld.so.conf".to_string(),
+        "/etc/ld.so.conf.d/**".to_string(),
+        // Classic rootkit hijack point; tiny file, checked every exec.
+        "/etc/ld.so.preload".to_string(),
+        "/etc/profile".to_string(),
+        "/etc/profile.d/**".to_string(),
+        "/etc/bash.bashrc".to_string(),
+        "/etc/motd".to_string(),
+        "/etc/rc.local".to_string(),
+        "/etc/issue".to_string(),
+        "/etc/issue.net".to_string(),
         "/etc/insserv.conf".to_string(),
         "/etc/localtime".to_string(),
         "/etc/timezone".to_string(),
@@ -584,6 +680,14 @@ fn default_linux(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
         "/etc/hostname".to_string(),
         "/etc/host.conf".to_string(),
         "/etc/machine-id".to_string(),
+        // Cloud provenance and injected boot config (often contains secrets).
+        "/etc/cloud/cloud.cfg".to_string(),
+        "/etc/cloud/cloud.cfg.d/**".to_string(),
+        "/var/lib/cloud/instances/**".to_string(),
+        "/var/lib/cloud/seed/**".to_string(),
+        // Installed-package evidence without shelling out to a package manager.
+        "/var/lib/dpkg/status".to_string(),
+        "/var/lib/apt/extended_states".to_string(),
         "/etc/screen-rc".to_string(),
         "/var/log/**".to_string(),
         "/var/spool/at/**".to_string(),
@@ -720,6 +824,20 @@ mod tests {
             dd,
             vec![dir.join("a.log"), dir.join("b.log"), dir.join("sub/c.log")]
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bare_doublestar_pattern_descends() {
+        // The default set relies on this shape: `/etc/pam.d/**` (no suffix)
+        // must match every file in the directory at any depth.
+        let dir = fixture("ddstar");
+        std::fs::write(dir.join("f1"), b"x").unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/f2"), b"x").unwrap();
+        let g = collect(&[&format!("{}/{}", dir.to_str().unwrap(), "**")]);
+        assert!(g.contains(&dir.join("f1")), "{g:?}");
+        assert!(g.contains(&dir.join("sub/f2")), "{g:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
