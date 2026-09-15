@@ -857,8 +857,11 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
-
-    #[cfg(unix)]
+    // Linux only by design: the matcher's case-sensitivity can only be
+    // observed on a case-sensitive filesystem, and macOS runners use
+    // case-insensitive APFS (SECRET.log and secret.LOG collide there,
+    // which tests the volume, not the matcher).
+    #[cfg(target_os = "linux")]
     #[test]
     fn globs_are_case_sensitive_on_unix() {
         let dir = fixture("case");
