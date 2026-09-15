@@ -5,6 +5,10 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  # Catch RUSTSEC disclosures against an unchanged Cargo.lock.
+  schedule:
+    - cron: "37 6 * * 1" # Mondays ~06:37 UTC
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,6 +23,7 @@ permissions:
 jobs:
   fmt:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       # Actions are pinned to commit SHAs, not mutable tags (supply-chain).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -26,6 +31,7 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cargo clippy --all-targets --locked -- -D warnings
@@ -39,12 +45,42 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cargo test --locked --verbose
 
-  audit:
+  # The release matrix ships musl-msvc-mac binaries; verify on every PR that
+  # all three targets still compile, instead of discovering drift at tag time.
+  cross-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+          - aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo check --locked --target ${{ matrix.target }}
+
+  # Release builds differ from debug (no overflow checks, no debug_assert,
+  # LTO): run the suite in release too so optimizer-visible bugs surface in
+  # PRs, not in IR binaries.
+  test-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: cargo test --release --locked
+
+  audit:
+    # Dependency advisories on every change, plus weekly re-check via schedule.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0

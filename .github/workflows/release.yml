@@ -24,16 +24,14 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             binary: tamatoa
-            archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: tamatoa.exe
-            archive: zip
           - os: macos-latest
             target: aarch64-apple-darwin
             binary: tamatoa
-            archive: tar.gz
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       # Actions pinned to commit SHAs, not mutable tags (supply-chain).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -53,6 +51,11 @@ jobs:
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # The artifact must actually start on its platform; a binary that only
+      # links but cannot execute is not a release.
+      - name: Smoke test
+        run: ./target/${{ matrix.target }}/release/${{ matrix.binary }} --version
 
       - name: Package (unix)
         if: matrix.os != 'windows-latest'
@@ -78,6 +81,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
