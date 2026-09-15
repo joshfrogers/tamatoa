@@ -2,9 +2,9 @@ use crate::arguments::CLIArguments;
 use crate::platform;
 use glob::MatchOptions;
 use glob::Pattern;
-use log::{error, info, trace, warn};
+use log::{error, info, warn};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::{fs, process};
 #[cfg(target_os = "windows")]
 use windows_drives;
 #[cfg(target_os = "windows")]

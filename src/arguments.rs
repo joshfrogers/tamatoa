@@ -98,6 +98,15 @@ pub struct Cli {
     )]
     pub zip_level: u32,
 
+    /// Per-artifact byte budget; oversized sources are skipped, not streamed
+    /// forever. Default 128 GiB; 0 disables.
+    #[arg(long = "max-file-bytes", value_name = "BYTES", default_value_t = 128u64 << 30)]
+    pub max_file_bytes: u64,
+
+    /// Total payload byte budget for the whole run. Default 1 TiB; 0 disables.
+    #[arg(long = "max-total-bytes", value_name = "BYTES", default_value_t = 1u64 << 40)]
+    pub max_total_bytes: u64,
+
     /// Emit a machine-readable JSON summary as the only stdout line.
     #[arg(long = "json")]
     pub json: bool,

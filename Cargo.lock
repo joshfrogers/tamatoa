@@ -766,6 +766,7 @@ dependencies = [
  "env_logger",
  "glob",
  "hostname",
+ "libc",
  "log",
  "ntfs",
  "serde_json",

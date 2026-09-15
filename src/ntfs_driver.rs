@@ -7,6 +7,9 @@ use std::env;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{BufReader, Read, Seek, Write};
+use std::path::{Path, PathBuf};
+
+use log::debug;
 
 use anyhow::{anyhow, bail, Context, Result};
 use ntfs::attribute_value::NtfsAttributeValue;
@@ -190,8 +193,12 @@ where
         let maybe_entry = NtfsFileNameIndex::find(&mut finder, info.ntfs, &mut info.fs, arg);
 
         if maybe_entry.is_none() {
-            println!("Cannot find subdirectory \"{}\".", arg);
-            return Ok(());
+            // Succeeding here made callers extract a same-named file from the
+            // wrong directory - silent evidence corruption.
+            bail!(
+                "directory \"{arg}\" not found in raw-access path \"{}\"",
+                info.current_directory_string
+            );
         }
 
         let entry = maybe_entry.unwrap()?;
@@ -200,8 +207,7 @@ where
             .expect("key must exist for a found Index Entry")?;
 
         if !file_name.is_directory() {
-            println!("\"{}\" is not a directory.", arg);
-            return Ok(());
+            bail!("\"{arg}\" is not a directory");
         }
 
         let file = entry.to_file(info.ntfs, &mut info.fs)?;
@@ -408,7 +414,7 @@ where
 //     Ok(())
 // }
 
-pub fn get<T>(arg: &str, info: &mut CommandInfo<T>) -> Result<()>
+pub fn get<T>(arg: &str, output_dir: &Path, info: &mut CommandInfo<T>) -> Result<PathBuf>
 where
     T: Read + Seek,
 {
@@ -418,17 +424,19 @@ where
         None => (arg, ""),
     };
 
-    // Compose the output file name and try to create it.
+    // Stage under the caller-provided private directory (never the process
+    // working directory: raw access is how SAM/SYSTEM get read on live hosts).
     // It must not yet exist, as we don't want to accidentally overwrite things.
     let output_file_name = if data_stream_name.is_empty() {
         file_name.to_string()
     } else {
         format!("{file_name}_{data_stream_name}")
     };
+    let staged_path = output_dir.join(&output_file_name);
     let mut output_file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&output_file_name)
+        .open(&staged_path)
         .with_context(|| format!("Tried to open \"{output_file_name}\" for writing"))?;
 
     // Open the desired file and find the $DATA attribute we are looking for.
@@ -436,34 +444,28 @@ where
     let data_item = match file.data(&mut info.fs, data_stream_name) {
         Some(data_item) => data_item,
         None => {
-            println!(
-                "The file does not have a \"{}\" $DATA attribute.",
-                data_stream_name
-            );
-            return Ok(());
+            bail!("The file does not have a \"{data_stream_name}\" $DATA attribute.")
         }
     };
     let data_item = data_item?;
     let data_attribute = data_item.to_attribute();
     let mut data_value = data_attribute.value(&mut info.fs)?;
 
-    println!(
-        "Saving {} bytes of data in \"{}\"...",
-        data_value.len(),
-        output_file_name
+    debug!(
+        "raw-extracting {} bytes of data from \"{file_name}\"",
+        data_value.len()
     );
-    let mut buf = [0u8; 4096];
+    let mut buf = vec![0u8; 256 * 1024];
 
     loop {
         let bytes_read = data_value.read(&mut info.fs, &mut buf)?;
         if bytes_read == 0 {
             break;
         }
-
-        output_file.write(&buf[..bytes_read])?;
+        output_file.write_all(&buf[..bytes_read])?;
     }
 
-    Ok(())
+    Ok(staged_path)
 }
 
 // fn help(arg: &str) -> Result<()> {
