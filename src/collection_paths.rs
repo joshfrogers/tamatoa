@@ -1,6 +1,5 @@
 use crate::arguments::CLIArguments;
 use crate::platform;
-use envmnt::{ExpandOptions, ExpansionType};
 use glob::MatchOptions;
 use glob::Pattern;
 use log::{error, info, trace, warn};
@@ -100,11 +99,11 @@ pub fn get_paths(
 
         if !platform::is_unix_like() {
             info!("Windows platform detected");
-            let mut exp_options = ExpandOptions::new();
-            exp_options.expansion_type = Some(ExpansionType::Windows);
-            let system_root = envmnt::expand("%SYSTEMROOT%", Some(exp_options));
-            let program_data = envmnt::expand("%PROGRAMDATA%", Some(exp_options));
-            let system_drive = envmnt::expand("%SystemDrive%", Some(exp_options));
+            let system_root =
+                std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+            let program_data = std::env::var("ProgramData")
+                .unwrap_or_else(|_| format!("{system_root}\\ProgramData"));
+            let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
 
             glob_paths.push(Pattern::new(&*format!("{}\\Tasks\\**", &system_root))?);
             glob_paths.push(Pattern::new(&*format!("{}\\Prefetch\\**", &system_root))?);

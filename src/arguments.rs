@@ -253,10 +253,7 @@ fn arg_help() {
             }
         }
         Err(e) => {
-            println!(
-                "Defaulting to standard filename 'tamatoa[.exe]', {}",
-                e
-            );
+            println!("Defaulting to standard filename 'tamatoa[.exe]', {}", e);
             filepath = String::from("tamatoa")
         }
     };

@@ -2,7 +2,7 @@ use crate::collection_paths::get_paths;
 use anyhow::{anyhow, Context as anyhow_context};
 use env_logger::Env;
 use log::{debug, error, info, trace, warn};
-use ring::digest::{Context, Digest, SHA256};
+use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, ErrorKind, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -120,9 +120,9 @@ fn create_archive(
         Err(e) => panic!("Error on file creation: {}", e),
     };
 
-    let options: zip::write::FileOptions = zip::write::FileOptions::default()
+    let options: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
-        .compression_level(Some(*zip_level));
+        .compression_level(Some(*zip_level as i64));
 
     let mut zip = zip::ZipWriter::new(file);
     if *hashing {
@@ -150,9 +150,9 @@ fn create_archive(
             let digest = sha256_digest(reader).unwrap();
 
             hash_file
-                .write(format!("{:?}\t{}\n", &digest, &i.to_str().unwrap()).as_bytes())
+                .write(format!("{}\t{}\n", &digest, &i.to_str().unwrap()).as_bytes())
                 .expect(&*format!(
-                    "Error writing '{:?}\t {}' to file",
+                    "Error writing '{}\t {}' to file",
                     &digest,
                     &i.to_str().unwrap()
                 ));
@@ -226,8 +226,8 @@ fn create_archive(
     Ok(())
 }
 
-fn sha256_digest<R: Read>(mut reader: R) -> Result<Digest, ErrorKind> {
-    let mut context = Context::new(&SHA256);
+fn sha256_digest<R: Read>(mut reader: R) -> Result<String, ErrorKind> {
+    let mut context = Sha256::new();
     let mut buffer = [0; 1024];
 
     loop {
@@ -238,7 +238,11 @@ fn sha256_digest<R: Read>(mut reader: R) -> Result<Digest, ErrorKind> {
         context.update(&buffer[..count]);
     }
 
-    Ok(context.finish())
+    Ok(context
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 #[cfg(unix)]
@@ -320,10 +324,28 @@ fn ll_disk_access(path: &PathBuf) -> anyhow::Result<File> {
     match get(file_name, &mut info) {
         Ok(_) => match File::open(file_name) {
             Ok(file) => return Ok(file),
-            Err(e) => {error!("Unable to copy file {}, reason: {}", &file_name, e); Err(anyhow!(e))},
+            Err(e) => {
+                error!("Unable to copy file {}, reason: {}", &file_name, e);
+                Err(anyhow!(e))
+            }
         },
         Err(err) => return Err(err),
     }
 
     // TODO: need to confirm we've tidied up after ourselves here.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sha256_digest;
+
+    #[test]
+    fn sha256_digest_matches_known_vector() {
+        // KAT cross-checked against `sha256sum` on the same bytes.
+        let d = sha256_digest(&b"hello evidence\n"[..]).unwrap();
+        assert_eq!(
+            d,
+            "fe482b5e524c67728f4f2b4f430cd10d9a25659641f995ae537b282ccd181e0b"
+        );
+    }
 }
