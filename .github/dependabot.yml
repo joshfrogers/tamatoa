@@ -26,3 +26,9 @@ updates:
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 3
+    groups:
+      # One PR for all action pins: checkout/upload/download must move in
+      # lockstep (artifact upload/download version pairing), never one at a
+      # time.
+      actions-all:
+        patterns: ["*"]
