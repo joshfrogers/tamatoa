@@ -228,7 +228,7 @@ mod tests {
         let mut sr = SectorReader::new(Cursor::new(data.clone()), 512).unwrap();
         // 512-aligned read starting past the last readable byte: EOF, not an error.
         let got = read_at(&mut sr, 600, 64).unwrap();
-        assert_eq!(got, Vec::new());
+        assert!(got.is_empty());
     }
 
     #[test]

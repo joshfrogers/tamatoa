@@ -1,6 +1,5 @@
 use crate::collection_paths::get_paths;
-use anyhow::{anyhow, Context as anyhow_context};
-use env_logger::Env;
+use anyhow::{anyhow, Context};
 use log::{debug, error, info, trace, warn};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
@@ -37,72 +36,121 @@ use crate::ntfs_driver::{cd, get};
 #[cfg(target_os = "windows")]
 use crate::sector_reader::SectorReader;
 
-fn main() {
-    let cli_args: arguments::CLIArguments = arguments::CLIArguments::new();
+fn main() -> std::process::ExitCode {
+    let cli = arguments::Cli::parse_cli();
+    init_logging(&cli);
 
-    let mut log_level: String;
-    if cli_args.disable_logging {
-        log_level = "none".to_string();
-    } else if !cli_args.log_verbosity.is_empty() {
-        println!("Running with log verbosity: {}", &cli_args.log_verbosity);
-        log_level = cli_args.log_verbosity.clone();
+    match execute(&cli) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            error!("tamatoa failed: {err:#}");
+            std::process::ExitCode::from(2)
+        }
+    }
+}
+
+fn init_logging(cli: &arguments::Cli) {
+    let level: log::LevelFilter = if cli.quiet {
+        log::LevelFilter::Error
     } else {
-        log_level = "warn".to_string();
+        cli.verbosity.parse().unwrap_or(log::LevelFilter::Info)
+    };
+    env_logger::Builder::new()
+        .filter_level(level)
+        .parse_env("TAMATOA_LOG")
+        .format_target(false)
+        .init();
+}
+
+fn execute(cli: &arguments::Cli) -> anyhow::Result<()> {
+    // Fail fast on bad output targets before paying for path enumeration.
+    let archive_path = resolve_output_path(cli)?;
+    let dto = arguments::to_dto(cli);
+    let collection_paths = get_paths(&dto, &dto.collection_files, &dto.with_usnjrnl)
+        .context("resolving collection paths")?;
+    if collection_paths.is_empty() {
+        return Err(anyhow!("no paths matched for collection"));
     }
-
-    let env = Env::default()
-        .filter_or("LRLOGLEVEL", log_level)
-        .write_style_or("LRLOGSTYLE", "always");
-
-    env_logger::init_from_env(env);
-
-    let mut collection_paths: Vec<PathBuf> = vec![];
-    match get_paths(&cli_args, &cli_args.collection_files, &cli_args.usnjrnl) {
-        Ok(path_vector) => collection_paths = path_vector,
-        Err(e) => error!("Error in collecting paths: {}", e),
-    }
-
     info!(
-        "Collecting and writing {} files to zip",
-        &collection_paths.len()
+        "Collecting {} paths into {}",
+        collection_paths.len(),
+        archive_path.display()
     );
 
-    let zip_filename: &str = &cli_args.output_filename;
-    let zip_path: String = cli_args.output_path + zip_filename;
-
-    match create_archive(
-        zip_path.as_str(),
+    let created = create_archive(
+        archive_path.to_str().context("archive path not UTF-8")?,
         collection_paths,
-        &cli_args.hash_files,
-        &cli_args.zip_level,
-    ) {
-        Ok(_) => trace!("Archive successfully created."),
-        Err(_) => error!("Archive creation error!"),
-    }
-    // the above method doesn't always let us copy data that is is use (or may be locked to admin perms)
-    // methods we could look into:
-    //  - NTFS crate
-    //  - VSS copy
-    //  - dump raw contents from disk (would likely be unsafe, not sure I want to go down that path, but perhaps we could expose via a switch?)
-    //  - 'unlock' the file - which may have non-benign consequences.
-
-    //     include the log messages within the archive
-    // println!("{:?}", collection_paths::find_users());
-    //     set up the connection to the sftp server, if arguments provided imply we're setting one up.
-    //     connect to the SFTP server
-    //     Create the file stream
-    if false {
-        if cli_args.use_sftp {
-            info!("Following is mocked connection:");
-            info!(
-                "Connecting to server: {}, using credentials {}:{}",
-                cli_args.sftp_server, cli_args.user_name, cli_args.user_password
-            );
-            info!(
-                "SFTP settings - outputpath: {}, cleanup: {}, dry_run: {}",
-                cli_args.sftp_output_path, cli_args.sftp_cleanup, cli_args.dry_run
-            );
+        &cli.hash_files,
+        &dto.zip_level,
+    );
+    match created {
+        Ok(()) => {
+            info!("Archive created: {}", archive_path.display());
+            Ok(())
         }
+        Err(e) => Err(anyhow!("archive creation failed: {e}")),
+    }
+}
+
+fn resolve_output_path(cli: &arguments::Cli) -> anyhow::Result<PathBuf> {
+    let dir = cli.output_dir.clone().unwrap_or_else(|| PathBuf::from("."));
+    if !dir.is_dir() {
+        return Err(anyhow!("output directory {} does not exist", dir.display()));
+    }
+    let name = match &cli.output_file {
+        Some(n) => n.clone(),
+        None => default_archive_name(),
+    };
+    if Path::new(&name)
+        .parent()
+        .map_or(false, |p| !p.as_os_str().is_empty())
+    {
+        return Err(anyhow!(
+            "--output-file must be a bare file name, got {name}"
+        ));
+    }
+    let full = dir.join(name);
+    if full.exists() && !cli.force {
+        return Err(anyhow!(
+            "refusing to overwrite existing archive {} (use --force)",
+            full.display()
+        ));
+    }
+    Ok(full)
+}
+
+fn default_archive_name() -> String {
+    let host = hostname::get()
+        .map(|h| sanitize_host(&h.to_string_lossy()))
+        .unwrap_or_else(|_| "unknownhost".to_string());
+    let now = time::OffsetDateTime::now_utc();
+    format!(
+        "{host}-{:04}{:02}{:02}T{:02}{:02}{:02}Z.zip",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    )
+}
+
+fn sanitize_host(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches(|c: char| c == '-' || c == '.');
+    if trimmed.is_empty() {
+        "unknownhost".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 
@@ -338,7 +386,10 @@ fn ll_disk_access(path: &PathBuf) -> anyhow::Result<File> {
 
 #[cfg(test)]
 mod tests {
-    use super::sha256_digest;
+    use super::{default_archive_name, resolve_output_path, sanitize_host, sha256_digest};
+    use crate::arguments::Cli;
+    use clap::error::ErrorKind;
+    use clap::Parser;
 
     #[test]
     fn sha256_digest_matches_known_vector() {
@@ -348,5 +399,69 @@ mod tests {
             d,
             "fe482b5e524c67728f4f2b4f430cd10d9a25659641f995ae537b282ccd181e0b"
         );
+    }
+
+    #[test]
+    fn hostnames_are_sanitized_for_filesystem() {
+        assert_eq!(sanitize_host("corp\\win-host.local"), "corp-win-host.local");
+        assert_eq!(sanitize_host("..."), "unknownhost");
+        assert_eq!(sanitize_host(""), "unknownhost");
+    }
+
+    #[test]
+    fn default_archive_name_carries_host_and_utc_timestamp() {
+        let name = default_archive_name();
+        assert!(name.ends_with(".zip"), "{name}");
+        let stamp = name.rsplit('-').next().unwrap();
+        assert_eq!(stamp.len(), "20260102T030405Z.zip".len());
+        assert!(stamp[0..8].bytes().all(|b| b.is_ascii_digit()), "{stamp}");
+        assert!(stamp.contains("T") && stamp.ends_with("Z.zip"), "{stamp}");
+    }
+
+    fn cli_with_dir(dir: &str, extra: &[&str]) -> Cli {
+        let mut args = vec!["tamatoa", "-od", dir];
+        args.extend_from_slice(extra);
+        Cli::try_parse_from(crate::arguments::normalize_args(
+            args.into_iter().map(String::from),
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn output_dir_must_exist() {
+        let cli = cli_with_dir("/definitely/not/a/dir", &[]);
+        let err = resolve_output_path(&cli).unwrap_err().to_string();
+        assert!(err.contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn output_paths_join_instead_of_concat() {
+        let dir = std::env::temp_dir().join(format!("tamatoa-test-join-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cli = cli_with_dir(dir.to_str().unwrap(), &["-of", "out.zip"]);
+        let full = resolve_output_path(&cli).unwrap();
+        assert_eq!(full, dir.join("out.zip"));
+
+        // existing archive is refused without --force
+        std::fs::write(dir.join("out.zip"), b"prior evidence").unwrap();
+        let err = resolve_output_path(&cli).unwrap_err().to_string();
+        assert!(err.contains("refusing to overwrite"), "{err}");
+
+        let forced = cli_with_dir(dir.to_str().unwrap(), &["-of", "out.zip", "--force"]);
+        assert_eq!(resolve_output_path(&forced).unwrap(), dir.join("out.zip"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn output_file_must_be_bare_name() {
+        let dir = std::env::temp_dir();
+        let cli = cli_with_dir(dir.to_str().unwrap(), &["-of", "../escape.zip"]);
+        assert!(resolve_output_path(&cli).is_err());
+    }
+
+    #[test]
+    fn usage_errors_are_reported_by_clap() {
+        let err = Cli::try_parse_from(["tamatoa", "--not-a-flag"]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
     }
 }
