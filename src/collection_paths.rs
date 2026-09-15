@@ -481,8 +481,9 @@ fn default_linux(out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
     // nonstandard homes (/export/home, /home2/...) are covered too.
     let mut homes: Vec<String> = vec![];
     for user in find_users() {
-        if !user.profile_path.is_empty() {
-            homes.push(user.profile_path.clone());
+        let home = user.profile_path.trim_end_matches('/');
+        if !home.is_empty() {
+            homes.push(home.to_string());
         }
     }
     homes.sort();
