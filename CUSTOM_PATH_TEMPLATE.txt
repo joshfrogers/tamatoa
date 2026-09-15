@@ -1,0 +1,53 @@
+# tamatoa custom collection template
+#
+# Use with:  tamatoa -c this-file.txt        (collect ONLY these entries)
+#            tamatoa -d this-file.txt        (collect these IN ADDITION to
+#                                             the platform defaults)
+#
+# Format:
+#   one entry per line; blank lines ignored; lines starting with # ignored
+#   environment variables are expanded: $VAR, ${VAR} and %VAR%
+#   entries may be:
+#     - a file      /etc/shadow
+#     - a directory /var/log            (collected recursively; symlinks and
+#                                        pseudo-filesystems /proc /sys /dev
+#                                        are never followed)
+#     - a glob      /var/log/*.log      ('*' matches within one directory;
+#                                        '**' matches any number of
+#                                        directories, e.g. /var/log/**/*.gz)
+#   an entry that matches nothing is recorded in the manifest as "missing";
+#   an entry that exists but cannot be read is recorded as failed (exit 1).
+#
+# Windows paths use backslashes (drive letters are flattened in the archive:
+# C:\Windows\... is stored as <host>/c/Windows/...):
+#   C:\Windows\System32\winevt\Logs\**
+#   %SystemRoot%\Prefetch\**
+#   C:\Users\*\NTUSER.DAT*
+#   C:\$Recycle.Bin\**\$I*
+
+# --- example: triage a specific incident -------------------------------------
+
+# case working directory dropped on the host by the responder
+$IR_CASE_DIR/**
+
+# shell history + ssh material for every real account
+/home/*/.bash_history
+/home/*/.ssh/known_hosts
+/root/.bash_history
+/root/.ssh/authorized_keys
+
+# system identity and scheduling
+/etc/passwd
+/etc/shadow
+/etc/crontab
+/etc/cron.d/**
+/etc/systemd/system/**
+
+# logs (recursive, any depth)
+/var/log/**
+
+# --- example: Windows additions (uncomment on Windows) -----------------------
+# %SystemRoot%\System32\config\SAM*
+# %SystemRoot%\System32\winevt\Logs\**
+# %SystemRoot%\Prefetch\**
+# C:\Users\*\AppData\Roaming\Microsoft\Windows\Recent\**
